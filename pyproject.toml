@@ -1,0 +1,43 @@
+[project]
+name = "nlp"
+version = "0.1.0"
+description = "Korean Dialogue Summarization Competition Pipeline"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Core ML/DL
+    "torch>=2.8.0",
+    "numpy>=2.2.6",
+
+    # Hugging Face Ecosystem
+    "transformers>=4.30.0",
+    "datasets>=2.12.0",
+    "accelerate>=0.20.0",
+    "peft>=0.4.0",  # LoRA/QLoRA
+
+    # Evaluation
+    "rouge>=1.0.1",  # Simple ROUGE implementation (no Java/konlpy needed)
+
+    # Experiment Tracking
+    "wandb>=0.15.0",
+
+    # Hyperparameter Optimization
+    "optuna>=3.2.0",
+
+    # Data Processing
+    "pandas>=2.3.3",
+    "polars>=1.33.1",
+
+    # Visualization
+    "matplotlib>=3.10.6",
+    "seaborn>=0.13.2",
+    "wordcloud>=1.9.0",
+
+    # ML Utilities
+    "scikit-learn>=1.7.2",
+    "tqdm>=4.67.1",
+
+    # Development
+    "jupyter>=1.0.0",
+    "ipywidgets>=8.0.0",
+]
