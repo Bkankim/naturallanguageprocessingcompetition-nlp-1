@@ -53,7 +53,7 @@ training:
   # Gradient accumulation 스텝 수
   gradient_accumulation_steps: 1
   # 평가 전략 (에폭마다 평가)
-  evaluation_strategy: "epoch"
+  eval_strategy: "epoch"
   # 체크포인트 저장 전략 (에폭마다 저장)
   save_strategy: "epoch"
   # 저장할 체크포인트 최대 개수

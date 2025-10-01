@@ -229,7 +229,7 @@ def create_trainer(
         lr_scheduler_type=config['training']['lr_scheduler_type'],
         optim=config['training']['optim'],
         gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
-        evaluation_strategy=config['training']['evaluation_strategy'],
+        eval_strategy=config['training']['eval_strategy'],
         save_strategy=config['training']['save_strategy'],
         save_total_limit=config['training']['save_total_limit'],
         fp16=config['training']['fp16'],
