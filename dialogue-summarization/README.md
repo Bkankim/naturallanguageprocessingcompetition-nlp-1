@@ -83,10 +83,18 @@ training:
 
 ## 📊 성능
 
+### Dev Set (Validation)
 | 모델 | ROUGE-1 | ROUGE-2 | ROUGE-L | ROUGE Sum |
 |------|---------|---------|---------|-----------|
 | baseline.ipynb | ~16 | ~9 | ~14 | **~47** |
-| 새 구조 (목표) | TBD | TBD | TBD | **47+** |
+| Modular Structure | 32.28 | 13.46 | 30.03 | **75.77** |
+
+### Test Set (경진대회 제출)
+| 실험 | ROUGE-1 | ROUGE-2 | ROUGE-L | Final Score |
+|------|---------|---------|---------|-------------|
+| **Experiment #1** (Baseline) | **0.5660** | **0.3675** | **0.4719** | **46.8487** |
+
+**📝 상세 기록**: [EXPERIMENT_LOG.md](./EXPERIMENT_LOG.md)
 
 ## 🛠️ 개발 가이드
 
