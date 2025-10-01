@@ -1,0 +1,107 @@
+# Base Configuration for Dialogue Summarization
+# baseline.ipynb의 config_data를 YAML로 변환한 설정 파일
+
+# 일반 설정
+general:
+  # 모델 생성에 필요한 데이터 경로
+  data_path: "../data/"
+  # 불러올 사전학습된 모델 이름 (요약 특화 모델)
+  model_name: "digit82/kobart-summarization"
+  # 모델의 최종 출력 값을 저장할 경로
+  output_dir: "./"
+
+# Tokenizer 설정
+tokenizer:
+  # 인코더(대화문)의 최대 길이
+  encoder_max_len: 512
+  # 디코더(요약문)의 최대 길이
+  decoder_max_len: 100
+  # 시작 토큰 (BART의 BOS 토큰)
+  bos_token: "</s>"
+  # 종료 토큰 (BART의 EOS 토큰)
+  eos_token: "</s>"
+  # 특정 단어들이 분해되지 않도록 지정하는 special tokens
+  # PII(개인정보) 마스킹 토큰과 화자 토큰 포함
+  special_tokens:
+    - "#Person1#"
+    - "#Person2#"
+    - "#Person3#"
+    - "#PhoneNumber#"
+    - "#Address#"
+    - "#PassportNumber#"
+
+# 학습 설정
+training:
+  # 기존 출력 디렉토리를 덮어쓸지 여부
+  overwrite_output_dir: true
+  # 전체 학습 에폭 수
+  num_train_epochs: 20
+  # 학습률
+  learning_rate: 1.0e-05
+  # 디바이스 당 학습 배치 크기
+  per_device_train_batch_size: 50
+  # 디바이스 당 평가 배치 크기
+  per_device_eval_batch_size: 32
+  # Warmup 비율 (학습률 스케줄러)
+  warmup_ratio: 0.1
+  # Weight decay (정규화)
+  weight_decay: 0.01
+  # 학습률 스케줄러 타입
+  lr_scheduler_type: "cosine"
+  # Optimizer 종류
+  optim: "adamw_torch"
+  # Gradient accumulation 스텝 수
+  gradient_accumulation_steps: 1
+  # 평가 전략 (에폭마다 평가)
+  evaluation_strategy: "epoch"
+  # 체크포인트 저장 전략 (에폭마다 저장)
+  save_strategy: "epoch"
+  # 저장할 체크포인트 최대 개수
+  save_total_limit: 5
+  # Mixed precision 훈련 (FP16)
+  fp16: true
+  # 학습 완료 후 최고 성능 모델 로드
+  load_best_model_at_end: true
+  # 랜덤 시드
+  seed: 42
+  # 로깅 디렉토리
+  logging_dir: "./logs"
+  # 로깅 전략 (에폭마다 로깅)
+  logging_strategy: "epoch"
+  # 생성 모드로 예측 (ROUGE 평가를 위해 필요)
+  predict_with_generate: true
+  # 생성 최대 길이
+  generation_max_length: 100
+  # 학습 수행 여부
+  do_train: true
+  # 평가 수행 여부
+  do_eval: true
+  # Early stopping patience (개선이 없을 경우 중단까지의 에폭 수)
+  early_stopping_patience: 3
+  # Early stopping threshold (개선으로 간주할 최소 임계값)
+  early_stopping_threshold: 0.001
+  # Wandb 관련 설정은 추후 추가 예정
+  # report_to: "wandb"
+
+# 추론 설정
+inference:
+  # 사전 학습된 모델 checkpoint 경로
+  ckt_path: "model ckt path"
+  # 추론 결과 저장 경로
+  result_path: "./prediction/"
+  # 반복되는 n-gram 방지 (크기)
+  no_repeat_ngram_size: 2
+  # Early stopping 사용 여부
+  early_stopping: true
+  # 생성 최대 길이
+  generate_max_length: 100
+  # Beam search의 beam 개수
+  num_beams: 4
+  # 추론 배치 크기
+  batch_size: 32
+  # 정확한 평가를 위해 제거할 생성 토큰들
+  remove_tokens:
+    - "<usr>"
+    - "</s>"  # bos_token
+    - "</s>"  # eos_token
+    - "<pad>"  # pad_token

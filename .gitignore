@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Model Checkpoints & Logs
+checkpoints/
+logs/
+wandb/
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.safetensors
+
+# Data (keep structure but not large files)
+*.csv.gz
+*.parquet
+*.feather
+
+# System
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.log
+*.tmp
+baseline_training.log
+improved_baseline.log
+prediction.log
+
+# Environment
+.env
+.env.local
