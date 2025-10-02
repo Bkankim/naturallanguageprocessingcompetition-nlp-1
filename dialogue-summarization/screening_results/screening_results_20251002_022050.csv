@@ -1,0 +1,7 @@
+model_name,nickname,rouge-1,rouge-2,rouge-l,rouge_sum,status
+Qwen/Qwen3-Omni-30B-A3B-Instruct,Qwen3-Omni-30B,0.0,0.0,0.0,0.0,"failed: The checkpoint you are trying to load has model type `qwen3_omni_moe` but Transformers does not recognize this architecture. This could be because of an issue with the checkpoint, or because your version of Transformers is out of date.
+
+You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports this model yet. In this case, you can get the most up-to-date code by installing Transformers from source with the command `pip install git+https://github.com/huggingface/transformers.git`"
+Qwen/Qwen2.5-32B-Instruct,Qwen2.5-32B,0.0,0.0,0.0,0.0,failed: Could not import module 'validate_bnb_backend_availability'. Are this object's requirements defined correctly?
+Bllossom/llama-3.2-Korean-Bllossom-3B,Korean-Bllossom-3B,0.0,0.0,0.0,0.0,failed: Could not import module 'validate_bnb_backend_availability'. Are this object's requirements defined correctly?
+upstage/SOLAR-10.7B-Instruct-v1.0,SOLAR-10.7B,0.0,0.0,0.0,0.0,failed: Could not import module 'validate_bnb_backend_availability'. Are this object's requirements defined correctly?

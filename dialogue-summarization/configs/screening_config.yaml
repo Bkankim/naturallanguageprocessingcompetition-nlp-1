@@ -1,0 +1,79 @@
+# Model Screening Configuration
+# QLoRA 4bit + W&B + Disk Management
+
+general:
+  data_path: "../data/"
+  result_path: "./screening_results/"
+  max_disk_usage_gb: 80  # 최대 디스크 사용량 (GB)
+
+# 스크리닝 대상 모델 목록 (검증된 작은 모델들)
+models:
+  - model_name: "gogamza/kobart-base-v2"
+    nickname: "KoBART-base"
+    description: "SKT KoBART base model"
+
+  - model_name: "ainize/kobart-news"
+    nickname: "KoBART-news"
+    description: "News summarization specialized"
+
+  - model_name: "psyche/KoT5-summarization"
+    nickname: "KoT5-sum"
+    description: "T5 Korean summarization"
+
+  - model_name: "digit82/kobart-summarization"
+    nickname: "KoBART-sum"
+    description: "Current baseline model"
+
+# Tokenizer 설정
+tokenizer:
+  encoder_max_len: 512
+  decoder_max_len: 100
+  bos_token: "</s>"
+  eos_token: "</s>"
+  # Special tokens - 모델별 자동 감지 또는 기본값 사용
+  special_tokens:
+    - "#Person1#"
+    - "#Person2#"
+    - "#Person3#"
+    - "#PhoneNumber#"
+    - "#Address#"
+    - "#PassportNumber#"
+
+# QLoRA 설정 (4bit 양자화) - 작은 모델은 비활성화
+qlora:
+  load_in_4bit: false  # KoBART는 작아서 FP16으로 가능
+  bnb_4bit_compute_dtype: "bfloat16"
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_use_double_quant: true
+
+# 추론 설정
+inference:
+  batch_size: 16  # 4bit이므로 더 큰 배치 가능
+  no_repeat_ngram_size: 2
+  early_stopping: true
+  generate_max_length: 100
+  num_beams: 4
+  remove_tokens:
+    - "<usr>"
+    - "</s>"
+    - "<pad>"
+    - "<unk>"
+
+# W&B 설정
+wandb:
+  enabled: false  # 로그인 필요, 일단 비활성화
+  project: "dialogue-summarization-screening"
+  entity: null  # 개인 계정 사용 시 null
+  name_prefix: "screening"
+  tags:
+    - "model-screening"
+    - "qlora-4bit"
+    - "dev-set"
+
+# 디스크 관리
+disk_management:
+  check_before_download: true
+  check_after_inference: true
+  auto_cleanup_cache: true  # 모델 평가 후 HuggingFace 캐시 삭제
+  cleanup_checkpoints: true  # 임시 체크포인트 삭제
+  keep_results_only: true   # 결과 CSV만 유지

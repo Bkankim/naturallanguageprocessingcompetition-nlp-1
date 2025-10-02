@@ -63,20 +63,73 @@ max_output_length: 100
 
 ---
 
+### Experiment #2: Model Screening (Zero-shot Evaluation)
+
+**날짜**: 2025-10-02
+**목적**: 여러 한국어 요약 모델의 Zero-shot 성능 비교
+**방법**: Fine-tuning 없이 사전학습된 모델로 Dev Set 평가
+
+#### 테스트 모델 (4개)
+1. `gogamza/kobart-base-v2` - SKT KoBART base model
+2. `ainize/kobart-news` - News summarization specialized
+3. `psyche/KoT5-summarization` - T5 Korean summarization
+4. `digit82/kobart-summarization` - Current baseline model
+
+#### 스크리닝 결과 (Dev Set, Zero-shot)
+
+| 모델 | ROUGE-1 | ROUGE-2 | ROUGE-L | ROUGE Sum | 상태 |
+|------|---------|---------|---------|-----------|------|
+| **KoT5-sum** | **10.04** | **3.18** | **9.51** | **22.74** | ✅ Success |
+| KoBART-sum | 8.34 | 2.19 | 7.75 | 18.27 | ✅ Success |
+| KoBART-base | 3.74 | 0.61 | 3.62 | 7.97 | ✅ Success |
+| KoBART-news | 0.00 | 0.00 | 0.00 | 0.00 | ❌ Failed (tokenizer error) |
+
+#### 설정
+```yaml
+inference:
+  batch_size: 16
+  num_beams: 4
+  no_repeat_ngram_size: 2
+  early_stopping: true
+  generate_max_length: 100
+
+disk_management:
+  auto_cleanup_cache: true  # 모델별 순차 실행 & 캐시 삭제
+  max_disk_usage_gb: 80
+```
+
+#### 분석
+- ✅ **최고 모델**: `psyche/KoT5-summarization` (ROUGE Sum 22.74)
+  - T5 기반 모델이 BART 기반보다 Zero-shot 성능 우수
+  - Fine-tuning 시 더 큰 성능 향상 기대
+- ✅ **Fine-tuning 효과 확인**:
+  - KoBART-sum Zero-shot: 18.27 → Fine-tuned: 75.77 (4.1배 향상)
+  - Fine-tuning이 필수적임을 재확인
+- ⚠️ **모델 선택 전략**:
+  - Zero-shot 성능이 높은 모델 = Fine-tuning 성능도 높을 가능성
+  - KoT5-sum을 다음 Fine-tuning 후보로 선정
+
+#### 개선점
+- [ ] KoT5-sum 모델 Fine-tuning 실험
+- [ ] 더 큰 모델 (mBART, KoGPT 등) 스크리닝 (디스크 제약 고려)
+- [ ] Ensemble 전략 (KoT5 + KoBART)
+
+---
+
 ## 🎯 다음 실험 계획
 
-### Experiment #2: Learning Rate Tuning (예정)
+### Experiment #3: KoT5 Fine-tuning (우선순위 높음)
+- 모델: `psyche/KoT5-summarization`
+- Zero-shot에서 가장 높은 성능 (ROUGE Sum 22.74)
+- 목표: Final Score > 48.0 (+1.15)
+
+### Experiment #4: Learning Rate Tuning
 - learning_rate: 5e-6, 3e-5, 5e-5 시도
-- 목표: Final Score > 47.0 (+0.15)
+- 목표: Fine-tuning 최적화
 
-### Experiment #3: Longer Training (예정)
-- num_train_epochs: 30
-- early_stopping_patience: 5
-- 목표: Overfitting 방지하면서 성능 향상
-
-### Experiment #4: Model Upgrade (예정)
-- 모델: `gogamza/kobart-base-v2` or `facebook/mbart-large-50`
-- 목표: 더 강력한 사전학습 모델 활용
+### Experiment #5: Ensemble Strategy
+- KoT5-sum + KoBART-sum 앙상블
+- 목표: 다양성 확보 및 성능 향상
 
 ---
 
