@@ -1,0 +1,2 @@
+model_name,nickname,rouge-1,rouge-2,rouge-l,rouge_sum,status
+Bllossom/llama-3.2-Korean-Bllossom-3B,Llama-3.2-Korean-3B,24.54075595998757,3.765185501637882,20.975198565583195,49.28114002720865,success

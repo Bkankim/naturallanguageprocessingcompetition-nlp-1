@@ -44,6 +44,11 @@ from src.data.preprocessor import Preprocess
 from src.data.dataset import DatasetForInference
 from src.evaluation.metrics import calculate_rouge_scores
 
+# RTX 3090 최적화: TF32 활성화 (Ampere 아키텍처)
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+print("✅ TF32 활성화 (RTX 3090 최적화)")
+
 # W&B import (optional)
 try:
     import wandb
@@ -165,13 +170,7 @@ def load_model_and_tokenizer(
         trust_remote_code=True
     )
 
-    # Special tokens 추가
-    if special_tokens:
-        tokenizer.add_special_tokens({
-            'additional_special_tokens': special_tokens
-        })
-
-    # 모델 로딩 설정
+    # 모델 로딩 설정 (TF32 최적화)
     load_kwargs = {
         "trust_remote_code": True
     }
@@ -179,10 +178,10 @@ def load_model_and_tokenizer(
     if bnb_config:
         load_kwargs["quantization_config"] = bnb_config
         load_kwargs["device_map"] = "auto"
-        quant_info = "4bit 양자화"
+        quant_info = "4bit 양자화 + TF32"
     else:
         load_kwargs["torch_dtype"] = torch.float16
-        quant_info = "FP16"
+        quant_info = "FP16 + TF32"
 
     # 모델 타입 감지 (Seq2Seq vs CausalLM)
     try:
@@ -192,6 +191,8 @@ def load_model_and_tokenizer(
             **load_kwargs
         )
         model_type = "seq2seq"
+        # Seq2Seq는 right padding
+        tokenizer.padding_side = 'right'
     except:
         # CausalLM 모델 (GPT, Llama, Qwen 등)
         model = AutoModelForCausalLM.from_pretrained(
@@ -199,6 +200,18 @@ def load_model_and_tokenizer(
             **load_kwargs
         )
         model_type = "causal"
+        # CausalLM은 left padding
+        tokenizer.padding_side = 'left'
+
+    # pad_token 설정 (없는 경우 eos_token 사용)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Special tokens 추가
+    if special_tokens:
+        tokenizer.add_special_tokens({
+            'additional_special_tokens': special_tokens
+        })
 
     # GPU로 이동 (4bit이 아닌 경우)
     if not bnb_config:
@@ -209,13 +222,57 @@ def load_model_and_tokenizer(
 
     print(f"✅ 모델 로딩 완료 (타입: {model_type}, {quant_info})")
     print(f"   파라미터 수: {model.num_parameters() / 1e9:.2f}B")
+    print(f"   Padding side: {tokenizer.padding_side}")
 
     return model, tokenizer, model_type
 
 
+def apply_chat_template(dialogue: str, model_name: str, tokenizer: Any) -> str:
+    """
+    모델별 Chat Template을 적용하여 프롬프트를 생성합니다.
+
+    Args:
+        dialogue: 원본 대화 텍스트
+        model_name: 모델명 (chat template 선택용)
+        tokenizer: 토크나이저
+
+    Returns:
+        str: Chat template이 적용된 프롬프트 텍스트
+    """
+    # 요약 instruction (구조화된 프롬프트)
+    system_message = (
+        "당신은 대화 요약 전문가입니다.\n"
+        "- 반드시 한국어만 사용하세요 (영문/일문/베트남어/이모지/URL 금지).\n"
+        "- 2~3문장으로 간결하게 요약하세요.\n"
+        "- 불필요한 수식어, 창작은 하지 마세요."
+    )
+    user_message = f"다음 대화를 요약하세요:\n---\n{dialogue}"
+
+    # Chat template 적용 (모델이 지원하는 경우)
+    if hasattr(tokenizer, 'chat_template') and tokenizer.chat_template:
+        try:
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ]
+            prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            return prompt
+        except Exception as e:
+            print(f"⚠️  Chat template 적용 실패, 기본 프롬프트 사용: {e}")
+
+    # Chat template이 없는 경우 기본 프롬프트
+    return f"{system_message}\n\n{user_message}"
+
+
 def prepare_dev_dataset(
     config: Dict[str, Any],
-    tokenizer: Any
+    tokenizer: Any,
+    model_name: str,
+    model_type: str
 ) -> Tuple[pd.DataFrame, DataLoader]:
     """
     Dev 데이터셋을 준비합니다.
@@ -223,18 +280,19 @@ def prepare_dev_dataset(
     Returns:
         Tuple[dev_data, dataloader]
     """
-    # 전처리기 초기화
-    preprocessor = Preprocess(
-        bos_token=config['tokenizer']['bos_token'],
-        eos_token=config['tokenizer']['eos_token']
-    )
-
-    # Dev 데이터 로드 (validation이므로 is_train=True로 summary 포함)
+    # Dev 데이터 로드
     dev_file_path = os.path.join(config['general']['data_path'], 'dev.csv')
-    dev_data = preprocessor.make_set_as_df(dev_file_path, is_train=True)
+    dev_data = pd.read_csv(dev_file_path)
 
-    # 인코더 입력 생성
-    encoder_input_dev, _ = preprocessor.make_input(dev_data, is_test=True)
+    # CausalLM 모델인 경우 chat template 적용
+    if model_type == "causal":
+        encoder_input_dev = [
+            apply_chat_template(dialogue, model_name, tokenizer)
+            for dialogue in dev_data['dialogue'].tolist()
+        ]
+    else:
+        # Seq2Seq 모델은 원본 대화 사용 (이미 요약 학습됨)
+        encoder_input_dev = dev_data['dialogue'].tolist()
 
     # 토크나이징
     tokenized_encoder_inputs = tokenizer(
@@ -262,8 +320,66 @@ def prepare_dev_dataset(
     )
 
     print(f"✅ Dev 데이터셋 준비 완료: {len(dev_data)} samples")
+    if model_type == "causal":
+        print(f"   Chat template 적용: {len(encoder_input_dev)}개 프롬프트 생성")
+        print(f"   샘플 프롬프트 (처음 200자):\n{encoder_input_dev[0][:200]}...")
 
     return dev_data, dataloader
+
+
+def generate_bad_words_ids(tokenizer) -> List[List[int]]:
+    """
+    외국어 문자를 포함한 토큰의 bad_words_ids를 생성합니다.
+    라틴/히라가나/가타카나/CJK 한자를 포함하는 토큰을 차단합니다.
+
+    Args:
+        tokenizer: HuggingFace 토크나이저
+
+    Returns:
+        List[List[int]]: bad_words_ids 리스트
+    """
+    bad_ids = []
+    vocab_size = len(tokenizer)
+
+    for token_id in range(vocab_size):
+        try:
+            # 토큰을 디코딩
+            token_str = tokenizer.decode([token_id], skip_special_tokens=True)
+            if not token_str:  # 빈 문자열은 스킵
+                continue
+
+            # 각 문자를 체크
+            is_bad = False
+            for ch in token_str:
+                code = ord(ch)
+                # 라틴 기본 A-Z / a-z
+                if 0x41 <= code <= 0x5A or 0x61 <= code <= 0x7A:
+                    is_bad = True
+                    break
+                # 라틴 확장 (베트남어 등 디액리틱 포함)
+                if 0x00C0 <= code <= 0x024F:
+                    is_bad = True
+                    break
+                # 히라가나
+                if 0x3040 <= code <= 0x309F:
+                    is_bad = True
+                    break
+                # 가타카나
+                if 0x30A0 <= code <= 0x30FF:
+                    is_bad = True
+                    break
+                # CJK 통합 한자 (Unified Ideographs)
+                if 0x4E00 <= code <= 0x9FFF:
+                    is_bad = True
+                    break
+
+            if is_bad:
+                bad_ids.append([token_id])
+
+        except Exception:
+            continue
+
+    return bad_ids
 
 
 def generate_summaries(
@@ -283,6 +399,11 @@ def generate_summaries(
     model.eval()
     summaries = []
 
+    # bad_words_ids 방식으로 외국어 차단 (라틴/일본어/CJK 한자)
+    print("\n🚫 외국어 토큰 차단 목록 생성 중...")
+    bad_words_ids = generate_bad_words_ids(tokenizer)
+    print(f"   차단 대상 토큰 수: {len(bad_words_ids)}개")
+
     print("\n🔮 요약 생성 중...")
 
     with torch.no_grad():
@@ -295,14 +416,16 @@ def generate_summaries(
                 generated_ids = model.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
-                    no_repeat_ngram_size=config['inference']['no_repeat_ngram_size'],
-                    early_stopping=config['inference']['early_stopping'],
                     max_length=config['inference']['generate_max_length'],
                     num_beams=config['inference']['num_beams'],
+                    no_repeat_ngram_size=config['inference']['no_repeat_ngram_size'],
+                    early_stopping=config['inference']['early_stopping'],
+                    length_penalty=1.0,
+                    repetition_penalty=1.1,
+                    bad_words_ids=bad_words_ids,
                 )
             else:
                 # CausalLM 모델 (Llama, Qwen, SOLAR)
-                # Prompt 구성 필요
                 generated_ids = model.generate(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -310,16 +433,22 @@ def generate_summaries(
                     num_beams=config['inference']['num_beams'],
                     no_repeat_ngram_size=config['inference']['no_repeat_ngram_size'],
                     early_stopping=config['inference']['early_stopping'],
+                    length_penalty=1.0,
+                    repetition_penalty=1.1,
+                    bad_words_ids=bad_words_ids,
                 )
                 # Input 부분 제거 (CausalLM은 input을 포함하여 생성)
                 generated_ids = generated_ids[:, input_ids.shape[1]:]
 
-            # 디코딩
+            # 디코딩 (special tokens 제거)
             for ids in generated_ids:
-                result = tokenizer.decode(ids, skip_special_tokens=False)
+                result = tokenizer.decode(ids, skip_special_tokens=True)
                 summaries.append(result)
 
     print(f"✅ 요약 생성 완료: {len(summaries)}개")
+    print(f"   샘플 요약 (처음 3개):")
+    for i in range(min(3, len(summaries))):
+        print(f"   [{i+1}] {summaries[i][:100]}...")
 
     return summaries
 
@@ -364,7 +493,12 @@ def evaluate_model(
         )
 
         # Dev 데이터셋 준비
-        dev_data, dataloader = prepare_dev_dataset(config, tokenizer)
+        dev_data, dataloader = prepare_dev_dataset(
+            config=config,
+            tokenizer=tokenizer,
+            model_name=model_name,
+            model_type=model_type
+        )
 
         # 요약 생성
         summaries = generate_summaries(
@@ -381,14 +515,15 @@ def evaluate_model(
         remove_tokens = config['inference']['remove_tokens']
         cleaned_summaries = clean_text(summaries, remove_tokens)
 
-        # ROUGE 평가
-        print("\n📊 ROUGE 평가 중...")
+        # ROUGE 평가 (문자 단위 토큰화)
+        print("\n📊 ROUGE 평가 중 (Mecab 형태소 토큰화)...")
         references = dev_data['summary'].tolist()
 
         rouge_scores = calculate_rouge_scores(
             predictions=cleaned_summaries,
             references=references,
-            remove_tokens=remove_tokens
+            remove_tokens=remove_tokens,
+            tokenization_mode='mecab'  # 대회 공식 평가 방식
         )
 
         # 점수 추출

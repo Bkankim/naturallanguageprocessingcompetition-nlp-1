@@ -133,6 +133,7 @@ def calculate_rouge_scores(
     predictions: List[str],
     references: List[str],
     remove_tokens: Optional[List[str]] = None,
+    tokenization_mode: str = 'char'
 ) -> Dict[str, Dict[str, float]]:
     """
     예측과 정답 텍스트 간의 ROUGE 점수를 계산합니다.
@@ -141,6 +142,10 @@ def calculate_rouge_scores(
         predictions (List[str]): 예측 텍스트 리스트
         references (List[str]): 정답 텍스트 리스트
         remove_tokens (Optional[List[str]]): 제거할 토큰 리스트
+        tokenization_mode (str): 토큰화 방식
+            - 'mecab': Mecab 형태소 단위 (대회 공식 평가 방식)
+            - 'char': 문자 단위 (한국어 권장, 조사/어미 독립적)
+            - 'whitespace': 공백 단위 (기본 rouge 라이브러리 방식)
 
     Returns:
         Dict[str, Dict[str, float]]: ROUGE-1, ROUGE-2, ROUGE-L 점수 (precision, recall, f1)
@@ -148,7 +153,7 @@ def calculate_rouge_scores(
     Examples:
         >>> predictions = ["안녕하세요 반갑습니다", "오늘 날씨가 좋아요"]
         >>> references = ["안녕하세요", "날씨가 좋습니다"]
-        >>> scores = calculate_rouge_scores(predictions, references)
+        >>> scores = calculate_rouge_scores(predictions, references, tokenization_mode='char')
         >>> print(scores['rouge-1']['f'])
     """
     rouge = Rouge()
@@ -157,6 +162,24 @@ def calculate_rouge_scores(
     if remove_tokens:
         predictions = clean_text(predictions, remove_tokens)
         references = clean_text(references, remove_tokens)
+
+    # 문자 단위 토큰화 (한국어 최적화)
+    if tokenization_mode == 'char':
+        # 각 문자를 공백으로 구분 (공백 제거 후)
+        predictions = [' '.join(text.replace(' ', '')) for text in predictions]
+        references = [' '.join(text.replace(' ', '')) for text in references]
+
+    # Mecab 형태소 단위 토큰화 (대회 공식 평가 방식)
+    elif tokenization_mode == 'mecab':
+        try:
+            from konlpy.tag import Mecab
+            mecab = Mecab()
+            predictions = [' '.join(mecab.morphs(text)) for text in predictions]
+            references = [' '.join(mecab.morphs(text)) for text in references]
+        except Exception as e:
+            print(f"⚠️  Mecab 토큰화 실패, 문자 단위로 대체: {e}")
+            predictions = [' '.join(text.replace(' ', '')) for text in predictions]
+            references = [' '.join(text.replace(' ', '')) for text in references]
 
     # ROUGE 점수 계산
     try:

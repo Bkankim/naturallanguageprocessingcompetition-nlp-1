@@ -1,0 +1,2 @@
+model_name,nickname,rouge-1,rouge-2,rouge-l,rouge_sum,status
+Qwen/Qwen3-4B-Instruct-2507,Qwen3-4B-Instruct,22.603916868786207,3.5400559602007977,18.87747337114408,45.02144620013108,success

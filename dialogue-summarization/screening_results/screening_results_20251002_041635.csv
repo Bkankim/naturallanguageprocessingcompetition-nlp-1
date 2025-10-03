@@ -1,0 +1,5 @@
+model_name,nickname,rouge-1,rouge-2,rouge-l,rouge_sum,status
+Qwen/Qwen2.5-32B-Instruct,Qwen2.5-32B,0.0,0.0,0.0,0.0,failed: Could not import module 'validate_bnb_backend_availability'. Are this object's requirements defined correctly?
+Bllossom/llama-3.2-Korean-Bllossom-8B,Llama-3.2-Korean-8B,0.0,0.0,0.0,0.0,"failed: Bllossom/llama-3.2-Korean-Bllossom-8B is not a local folder and is not a valid model identifier listed on 'https://huggingface.co/models'
+If this is a private repository, make sure to pass a token having permission to this repo either by logging in with `hf auth login` or by passing `token=<your_token>`"
+upstage/SOLAR-10.7B-Instruct-v1.0,SOLAR-10.7B,0.0,0.0,0.0,0.0,failed: Could not import module 'validate_bnb_backend_availability'. Are this object's requirements defined correctly?

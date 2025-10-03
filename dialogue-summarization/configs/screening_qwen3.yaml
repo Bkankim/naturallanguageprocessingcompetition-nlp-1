@@ -1,4 +1,4 @@
-# Model Screening Configuration
+# Model Screening Configuration - Qwen3-4B Only
 # QLoRA 4bit + W&B + Disk Management
 
 general:
@@ -8,22 +8,6 @@ general:
 
 # 스크리닝 대상 모델 목록 (TF32 최적화)
 models:
-  - model_name: "Qwen/Qwen2.5-7B-Instruct"
-    nickname: "Qwen2.5-7B"
-    description: "Qwen2.5 7B Instruct model"
-
-  - model_name: "MLP-KTLim/llama-3-Korean-Bllossom-8B"
-    nickname: "Llama-3-Korean-8B"
-    description: "Llama 3 Korean Bllossom 8B"
-
-  - model_name: "Bllossom/llama-3.2-Korean-Bllossom-3B"
-    nickname: "Llama-3.2-Korean-3B"
-    description: "Llama 3.2 Korean Bllossom 3B"
-
-  - model_name: "Bllossom/llama-3.2-Korean-Bllossom-AICA-5B"
-    nickname: "Llama-3.2-Korean-AICA-5B"
-    description: "Llama 3.2 Korean Bllossom AICA 5B"
-
   - model_name: "Qwen/Qwen3-4B-Instruct-2507"
     nickname: "Qwen3-4B-Instruct"
     description: "Qwen3 4B Instruct 2507 (SOLAR replacement)"
@@ -67,11 +51,12 @@ wandb:
   enabled: true  # W&B 로깅 활성화
   project: "dialogue-summarization-screening"
   entity: null  # 개인 계정 사용 시 null
-  name_prefix: "screening"
+  name_prefix: "screening-qwen3"
   tags:
     - "model-screening"
     - "qlora-4bit"
     - "dev-set"
+    - "qwen3-4b"
 
 # 디스크 관리
 disk_management:
