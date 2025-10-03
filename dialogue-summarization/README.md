@@ -171,6 +171,130 @@ compute_metrics = compute_metrics_for_trainer(tokenizer)
    - 상세한 Docstring (Google 스타일)
    - README 및 사용 가이드 완비
 
+## 💡 개발 인사이트 & 배운 점
+
+### 1. 모델 크기 ≠ 성능
+
+**문제**: 처음에는 "큰 모델이 무조건 좋을 것"이라고 생각했습니다.
+
+**발견**: Llama-3.2-Korean-3B (3.21B)가 AICA-5B (4.31B)와 Llama-3-8B (8.03B)보다 더 나은 성능을 보였습니다.
+
+| 모델 | 파라미터 | ROUGE Sum | 비고 |
+|------|----------|-----------|------|
+| Llama-3.2-Korean-3B | 3.21B | **49.52** | 🏆 |
+| Llama-3-Korean-8B | 8.03B | 48.61 | 2.6배 크지만 0.91점만 차이 |
+| Llama-3.2-AICA-5B | 4.31B | 41.99 | 1.3배 크지만 7.53점 낮음 |
+
+**교훈**:
+- **Task Alignment이 모델 크기보다 중요합니다**
+- Instruction-tuned 모델 > Conversation-specialized 모델 (요약 태스크의 경우)
+- AICA는 "대화 생성"에 특화되어 Zero-shot 요약 성능이 낮았습니다
+- 파인튜닝으로 역전 가능성은 있지만, 좋은 출발점을 선택하는 게 효율적입니다
+
+### 2. SOLAR 모델의 극심한 속도 저하
+
+**문제**: SOLAR-10.7B가 다른 모델 대비 **40배 느렸습니다** (22분/배치 vs 27-33초/배치).
+
+**가설 검증**:
+- ✅ 모델 크기 (10.7B vs 7-8B): 1.5배 차이는 40배 속도 저하를 설명하지 못함
+- ✅ 양자화 문제: 4bit NF4 정상 작동 (15GB GPU, 2GB RAM)
+- ✅ FlashAttention: SDPA 활성화됨
+- ✅ 배치 크기, 시퀀스 길이: 모두 동일
+- 🚨 **Root Cause**: **Depth Upscaling 아키텍처**
+
+**발견**: SOLAR은 두 개의 Llama2-7B 모델을 수직으로 병합하여 ~48 layers를 가집니다.
+- 일반 10B 모델: ~32 layers (~20 TFLOPs/token)
+- SOLAR: ~48 layers (~30 TFLOPs/token)
+- Beam search (4 beams) × 긴 forward pass = 극심한 속도 저하
+
+**교훈**:
+- 모델 아키텍처가 추론 속도에 큰 영향을 미칩니다
+- 파라미터 수만으로 속도를 예측할 수 없습니다
+- Zero-shot 스크리닝은 실제 추론 환경에서 테스트해야 합니다
+
+**해결**: SOLAR을 Qwen3-4B-Instruct-2507로 교체 (정상 속도 복구)
+
+### 3. 초기 스크리닝의 10가지 문제점
+
+첫 스크리닝에서 ROUGE Sum이 1-2점대로 비정상적으로 낮게 나왔습니다.
+
+**발견한 문제들** (상세: [SCREENING_ISSUES_ANALYSIS.md](./screening_results/SCREENING_ISSUES_ANALYSIS.md)):
+
+**Critical Issues**:
+1. ❌ Chat Template 미적용 → 모델이 시스템 프롬프트를 무시
+2. ❌ 한국어 프롬프트 부족 → 영어/일본어 혼합 출력
+3. ❌ Character-level 토큰화 → 한국어 ROUGE 부정확
+4. ❌ 외국어 토큰 차단 미적용 → Latin/Japanese 출력
+5. ❌ QLoRA 미적용 → OOM 또는 느린 속도
+6. ❌ TF32 미활성화 → RTX 3090 성능 미활용
+
+**수정 후 성능 개선**:
+- Llama-3.2-Korean-3B: 1.84 → **49.52** (26.9배 향상)
+- Llama-3-Korean-8B: 1.18 → **48.61** (41.2배 향상)
+
+**교훈**:
+- LLM은 **Chat Template이 필수**입니다 (특히 Instruction-tuned 모델)
+- 한국어 평가는 **Mecab 형태소 토큰화**가 정확합니다
+- `bad_words_ids`로 121,413개 외국어 토큰 차단 → 순수 한국어 출력 보장
+- RTX 3090에서는 TF32 활성화가 필수입니다
+
+### 4. 디스크 관리 전략
+
+**문제**: Qwen3-4B 스크리닝 시작 시 디스크 용량 초과 (91.53GB > 80GB 한도)
+
+**발견**:
+```bash
+HuggingFace 모델 캐시: 20GB (SOLAR, Qwen2.5 등 불필요한 캐시)
+HuggingFace xet 캐시: 9.3GB
+UV archive: 7.8GB
+W&B artifacts: 473MB
+```
+
+**해결**: 불필요한 캐시 정리 → 68GB로 축소
+
+**캐시 삭제 전략**:
+```bash
+# 사용 완료된 모델 캐시 삭제
+rm -rf ~/.cache/huggingface/hub/models--<model_name>
+
+# 전체 xet 캐시 삭제 (LFS 관련)
+rm -rf ~/.cache/huggingface/xet
+
+# UV 패키지 관리자 아카이브 삭제
+rm -rf ~/.cache/uv/archive-v0
+
+# W&B 오래된 artifacts 삭제
+rm -rf ~/.cache/wandb/artifacts
+```
+
+**교훈**:
+- 실험 중에는 정기적으로 디스크 사용량을 체크하세요
+- 각 모델 스크리닝 후 즉시 캐시를 삭제하는 것이 좋습니다
+- `delete_cache=True` 옵션을 코드에 통합하면 자동화할 수 있습니다
+
+### 5. Zero-shot 평가의 중요성
+
+**교훈**: 파인튜닝 전에 Zero-shot 평가로 모델을 스크리닝하면:
+- 시간 절약: 5개 모델 × 1시간 학습 = 5시간 vs 5개 × 15분 추론 = 75분
+- 초기 성능 파악: 좋은 출발점 선택 → 파인튜닝 효율 향상
+- Task Alignment 검증: 모델이 태스크를 이해하는지 미리 확인
+
+**다음 단계**: Llama-3.2-Korean-3B를 선택하여 파인튜닝 진행 (예상: 1시간)
+
+### 6. 실패한 시도들
+
+**시도 1**: AICA-5B가 5B 모델이니 좋을 것이라 예상
+- **결과**: 5위 (41.99)
+- **이유**: 대화 생성에 특화되어 요약 성능 낮음
+
+**시도 2**: SOLAR-10.7B가 10B 모델이니 가장 좋을 것이라 예상
+- **결과**: 중단 (극심한 속도 저하)
+- **이유**: Depth Upscaling 아키텍처로 인한 높은 FLOPs
+
+**시도 3**: Character-level ROUGE로 한국어 평가
+- **결과**: 부정확한 점수 (형태소 단위가 정확함)
+- **수정**: Mecab 형태소 토큰화 적용
+
 ## 🐛 트러블슈팅
 
 ### Q: Java/konlpy 오류가 발생합니다
