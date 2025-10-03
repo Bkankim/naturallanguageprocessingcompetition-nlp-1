@@ -295,6 +295,41 @@ rm -rf ~/.cache/wandb/artifacts
 - **결과**: 부정확한 점수 (형태소 단위가 정확함)
 - **수정**: Mecab 형태소 토큰화 적용
 
+### 7. QLoRA 설정 최적화 (최신 연구 기반)
+
+**문제**: 초기 설정이 보수적이고 최신 연구와 불일치
+
+**검증 방법**: QLoRA 논문, Lightning AI 실험, 공식 문서 참조
+
+**주요 발견 및 수정**:
+
+| 항목 | 초기 설정 | 최종 설정 | 근거 |
+|------|----------|----------|------|
+| Target Modules | Attention만 (4개) | **All linear (7개)** | QLoRA paper¹: "add LoRA on all linear layers" |
+| Learning Rate | 3e-4 (작은 모델) | **2e-4** | QLoRA paper¹ + Lightning AI²: 표준값 |
+| LR Scheduler | cosine | **constant** | QLoRA paper¹: benchmarked best |
+| LoRA Dropout | 0.05 (모든 모델) | **0.1 (≤13B)** | QLoRA paper¹: 모델 크기별 차별화 |
+| Adam Beta2 | 미설정 | **0.999** | QLoRA paper¹ |
+| Max Grad Norm | 미설정 | **0.3** | QLoRA paper¹ |
+| Float Type | fp16 (모든 모델) | **모델별** | Llama³: bf16, Qwen⁴: fp16 |
+
+**예상 효과**:
+- MLP 레이어 추가 → 학습 파라미터 30% → **70%** (2.3배)
+- ROUGE Sum 향상: **+3~5점** 예상
+- 학습 시간: 1.5배 증가 (Trade-off)
+
+**참고 문헌**:
+1. Dettmers et al. (2023). "QLoRA: Efficient Finetuning of Quantized LLMs". arXiv:2305.14314
+2. Lightning AI (2024). "Finetuning LLMs with LoRA and QLoRA: Insights from Hundreds of Experiments"
+3. Bllossom Team (2024). "Llama-3-Korean-Bllossom" - AAAI2024, NAACL2024
+4. Qwen Team (2024). "Qwen2.5 Official Documentation"
+
+**교훈**:
+- 최신 연구 논문의 실제 설정을 따르는 것이 중요
+- "일반적 권장"보다 **논문의 실제 실험 설정** 참고
+- 모델별 공식 문서 확인 (Llama vs Qwen의 float type 차이)
+- 설정 변경 시 항상 근거와 출처 남기기
+
 ## 🐛 트러블슈팅
 
 ### Q: Java/konlpy 오류가 발생합니다

@@ -1,0 +1,224 @@
+# LLM Fine-tuning Configuration
+# QLoRA 4bit + LoRA + W&B
+
+general:
+  data_path: "../data/"
+  output_base_dir: "./checkpoints/llm_finetuning"
+  max_disk_usage_gb: 100  # 파인튜닝은 체크포인트 저장으로 더 필요
+
+# 파인튜닝 대상 모델
+models:
+  # === Encoder-Decoder 모델 (Baseline 비교용) ===
+  - model_name: "digit82/kobart-summarization"
+    nickname: "koBART-summarization"
+    description: "Encoder-Decoder baseline (pretrained on summarization)"
+    model_type: "encoder_decoder"
+    use_qlora: false
+    learning_rate: 1.0e-5
+    batch_size: 8
+    target_modules: null  # 전체 파인튜닝
+
+  - model_name: "paust/pko-t5-base"
+    nickname: "koT5-base"
+    description: "Encoder-Decoder T5 baseline"
+    model_type: "encoder_decoder"
+    use_qlora: false
+    learning_rate: 1.0e-5
+    batch_size: 8
+    target_modules: null  # 전체 파인튜닝
+
+  # === Decoder-only LLM (QLoRA) ===
+  - model_name: "Bllossom/llama-3.2-Korean-Bllossom-3B"
+    nickname: "Llama-3.2-Korean-3B"
+    description: "1st place (49.52) - Best performer"
+    model_type: "causal_lm"
+    use_qlora: true
+    chat_template_type: "llama"
+    learning_rate: 2.0e-4     # QLoRA 표준 (3e-4 → 2e-4)
+    batch_size: 2
+    lora_dropout: 0.1         # 13B 이하는 0.1
+    use_bf16: true            # Llama-Korean 권장 bf16
+    use_fp16: false
+
+  - model_name: "Qwen/Qwen3-4B-Instruct-2507"
+    nickname: "Qwen3-4B-Instruct"
+    description: "4th place (45.02)"
+    model_type: "causal_lm"
+    use_qlora: true
+    chat_template_type: "qwen"
+    learning_rate: 2.0e-4     # QLoRA 표준 (3e-4 → 2e-4)
+    batch_size: 2
+    lora_dropout: 0.1
+    use_bf16: false           # Qwen은 fp16 권장
+    use_fp16: true
+
+  - model_name: "Qwen/Qwen2.5-7B-Instruct"
+    nickname: "Qwen2.5-7B"
+    description: "3rd place (46.84)"
+    model_type: "causal_lm"
+    use_qlora: true
+    chat_template_type: "qwen"
+    learning_rate: 1.0e-4     # 7B는 낮은 LR (1.5e-4 → 1e-4)
+    batch_size: 1
+    lora_dropout: 0.1
+    use_bf16: false           # Qwen은 fp16 권장
+    use_fp16: true
+
+  - model_name: "MLP-KTLim/llama-3-Korean-Bllossom-8B"
+    nickname: "Llama-3-Korean-8B"
+    description: "2nd place (48.61)"
+    model_type: "causal_lm"
+    use_qlora: true
+    chat_template_type: "llama"
+    learning_rate: 1.0e-4     # 8B는 낮은 LR 유지
+    batch_size: 1
+    lora_dropout: 0.1
+    use_bf16: true            # Llama-Korean 권장 bf16
+    use_fp16: false
+
+# 데이터 설정
+data:
+  train_file: "train.csv"
+  dev_file: "dev.csv"
+
+  # Chat template 적용
+  apply_chat_template: true
+
+  # 시스템 프롬프트
+  system_prompt: |
+    당신은 대화 요약 전문가입니다.
+    - 반드시 한국어만 사용하세요 (영문/일문/베트남어/이모지/URL 금지).
+    - 2~3문장으로 간결하게 요약하세요.
+    - 불필요한 수식어, 창작은 하지 마세요.
+
+  # 입력 포맷
+  input_template: "다음 대화를 요약하세요:\n---\n{dialogue}\n---"
+
+# Tokenizer 설정
+tokenizer:
+  encoder_max_len: 512
+  decoder_max_len: 100
+  special_tokens:
+    - "#Person1#"
+    - "#Person2#"
+    - "#Person3#"
+    - "#PhoneNumber#"
+    - "#Address#"
+    - "#PassportNumber#"
+
+# QLoRA 설정 (4bit 양자화)
+qlora:
+  load_in_4bit: true
+  bnb_4bit_compute_dtype: "bfloat16"
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_use_double_quant: true
+
+# LoRA 설정 (QLoRA paper 기반)
+lora:
+  r: 16                    # LoRA rank (64도 고려 가능)
+  lora_alpha: 32          # alpha = r * 2
+  # lora_dropout은 모델별로 아래에서 설정
+  target_modules:         # ALL LINEAR LAYERS (QLoRA paper 권장)
+    - q_proj
+    - v_proj
+    - k_proj
+    - o_proj
+    - gate_proj          # MLP layers 추가 (중요!)
+    - up_proj
+    - down_proj
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# Training Arguments (QLoRA paper 기반)
+training:
+  # 기본 설정
+  num_train_epochs: 3
+
+  # 배치 크기 (QLoRA 4bit)
+  per_device_train_batch_size: 1  # 모델별로 위에서 설정
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 8  # Effective batch = 1 * 8 = 8
+
+  # Learning rate (모델별로 위에서 설정)
+  learning_rate: 2.0e-4      # 기본값 (모델별로 override)
+  warmup_ratio: 0.03         # 3% warmup
+  lr_scheduler_type: "constant"  # QLoRA paper 권장 (cosine → constant)
+
+  # 최적화 (QLoRA paper)
+  optim: "paged_adamw_32bit"  # QLoRA 최적화 옵티마이저
+  adam_beta1: 0.9
+  adam_beta2: 0.999          # QLoRA paper 권장
+  max_grad_norm: 0.3         # QLoRA paper 권장
+
+  # Float type (모델별로 위에서 설정)
+  bf16: false                 # 기본값 (모델별로 override)
+  fp16: true                  # 기본값 (모델별로 override)
+  gradient_checkpointing: true  # 메모리 절약
+
+  # Seq2Seq 특화
+  predict_with_generate: true
+  generation_max_length: 100
+  generation_num_beams: 4
+
+  # 저장 & 평가
+  save_strategy: "epoch"
+  evaluation_strategy: "epoch"
+  save_total_limit: 2        # 최대 2개 체크포인트만 유지
+  load_best_model_at_end: true
+  metric_for_best_model: "rouge_sum"
+  greater_is_better: true
+
+  # 로깅
+  logging_steps: 10
+  logging_first_step: true
+  report_to: "wandb"
+
+# 추론 설정 (평가용)
+inference:
+  batch_size: 4
+  no_repeat_ngram_size: 2
+  early_stopping: true
+  generate_max_length: 100
+  num_beams: 4
+  remove_tokens:
+    - "<usr>"
+    - "</s>"
+    - "<pad>"
+    - "<unk>"
+
+# Chat Template 맵핑
+chat_templates:
+  llama:
+    system_start: "<|start_header_id|>system<|end_header_id|>\n\n"
+    system_end: "<|eot_id|>"
+    user_start: "<|start_header_id|>user<|end_header_id|>\n\n"
+    user_end: "<|eot_id|>"
+    assistant_start: "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    assistant_end: "<|eot_id|>"
+
+  qwen:
+    system_start: "<|im_start|>system\n"
+    system_end: "<|im_end|>\n"
+    user_start: "<|im_start|>user\n"
+    user_end: "<|im_end|>\n"
+    assistant_start: "<|im_start|>assistant\n"
+    assistant_end: "<|im_end|>"
+
+# W&B 설정
+wandb:
+  enabled: true
+  project: "dialogue-summarization-finetuning"
+  entity: null  # 개인 계정
+  name_prefix: "finetune"
+  tags:
+    - "llm-finetuning"
+    - "qlora-4bit"
+    - "lora-r16"
+    - "train-set"
+
+# 디스크 관리
+disk_management:
+  check_before_training: true
+  check_after_epoch: true
+  auto_cleanup_cache: false  # 파인튜닝 중에는 캐시 유지
+  cleanup_old_checkpoints: true
