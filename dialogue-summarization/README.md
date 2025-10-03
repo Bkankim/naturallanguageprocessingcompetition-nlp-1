@@ -52,6 +52,39 @@ python scripts/generate_predictions.py \
     --checkpoint checkpoints/baseline_run/final_model
 ```
 
+### 3. LLM 파인튜닝 (QLoRA)
+
+6개 모델 (koBART, koT5, Llama-3.2-3B, Qwen3-4B, Qwen2.5-7B, Llama-3-8B) 파인튜닝:
+
+```bash
+cd /Competition/NLP/dialogue-summarization
+
+# W&B 로그인 (처음 한 번만)
+wandb login
+
+# 파인튜닝 실행
+python scripts/llm_finetuning.py --config configs/finetune_config.yaml
+```
+
+**주요 기능**:
+- **QLoRA 4bit 양자화** - RTX 3090 24GB에서 8B 모델 학습 가능
+- **LoRA r=16** - 7개 linear layers (attention + MLP)
+- **W&B 실시간 로깅** - 구조화된 메트릭 추적
+- **모델별 최적화** - LR, batch size, float type 개별 설정
+- **자동 Trainer 선택** - Encoder-Decoder는 Seq2SeqTrainer, Causal LM은 Trainer 사용
+
+**W&B Run Naming Convention**:
+```
+{nickname}_ep{epochs}_bs{effective_bs}_lr{lr}_{timestamp}
+예: Llama-3.2-Korean-3B_ep3_bs16_lr2e-4_20250103-143025
+```
+
+**예상 소요 시간** (RTX 3090):
+- Llama-3.2-Korean-3B: ~1시간
+- Llama-3-Korean-8B: ~3시간
+
+자세한 설정은 `configs/finetune_config.yaml` 참조.
+
 ## 📁 프로젝트 구조
 
 ```
@@ -67,14 +100,19 @@ dialogue-summarization/
 │   │   └── metrics.py
 │   ├── inference/         # 추론 관련 (향후 확장)
 │   └── utils/             # 유틸리티
-│       └── seed.py
+│       ├── seed.py
+│       └── wandb_logger.py         # W&B 로깅 전용 모듈
 ├── scripts/
 │   ├── train_baseline.py           # 학습 스크립트
 │   ├── generate_predictions.py     # 추론 스크립트
+│   ├── llm_finetuning.py           # LLM 파인튜닝 스크립트
+│   ├── model_screening.py          # LLM Zero-shot 스크리닝
 │   └── run_inference.sh            # 추론 쉘 스크립트
 ├── configs/
 │   ├── base_config.yaml            # 기본 설정
-│   └── train_config.yaml           # 학습 설정
+│   ├── train_config.yaml           # 학습 설정
+│   ├── finetune_config.yaml        # LLM 파인튜닝 설정 (QLoRA)
+│   └── screening_config.yaml       # LLM 스크리닝 설정
 ├── checkpoints/                    # 모델 체크포인트
 ├── logs/                           # 로그 파일
 └── submissions/                    # 제출 파일
@@ -329,6 +367,103 @@ rm -rf ~/.cache/wandb/artifacts
 - "일반적 권장"보다 **논문의 실제 실험 설정** 참고
 - 모델별 공식 문서 확인 (Llama vs Qwen의 float type 차이)
 - 설정 변경 시 항상 근거와 출처 남기기
+
+### 8. W&B 로깅 모듈 설계
+
+**문제**: 파인튜닝 스크립트에 W&B 로깅 코드를 직접 작성하면 코드가 복잡하고 재사용이 어려움
+
+**해결**: 전용 W&B 로깅 모듈 (`src/utils/wandb_logger.py`) 생성
+
+**모듈 구조**:
+```python
+from src.utils.wandb_logger import WandBLogger
+
+# 초기화
+logger = WandBLogger(config)
+
+# 모델별 Run 생성
+logger.init_run(model_config)
+
+# 학습 (자동 로깅)
+trainer.train()
+
+# Run 종료
+logger.finish()
+```
+
+**주요 기능**:
+
+1. **구조화된 Run Naming**:
+   ```
+   {nickname}_ep{epochs}_bs{effective_bs}_lr{lr}_{timestamp}
+   예: Llama-3.2-Korean-3B_ep3_bs16_lr2e-4_20250103-143025
+   ```
+
+2. **자동 태그 생성**:
+   - `model-type:{encoder_decoder|causal_lm}`
+   - `training:{full-finetune|qlora-4bit}`
+   - `size:{3B|4B|7B|8B|base}`
+   - `arch:{llama|qwen|bart|t5}`
+   - `float:{bf16|fp16}`
+
+3. **Group 관리**:
+   - Encoder-Decoder: `encoder-decoder-baseline`
+   - Decoder-only: `decoder-only-qlora`
+
+4. **Config 로깅**:
+   - 모델 정보, 학습 설정, LoRA 파라미터 등 자동 기록
+   - W&B UI에서 하이퍼파라미터 비교 가능
+
+**장점**:
+- **재사용성**: 다른 스크립트(추론, 평가)에서도 동일한 로깅 구조 사용
+- **유지보수**: W&B 관련 코드가 한 곳에 집중
+- **일관성**: 모든 실험에서 동일한 네이밍/태깅 규칙 적용
+- **테스트 용이**: 로깅 로직을 독립적으로 테스트 가능
+
+**예제 사용**:
+```python
+# 파인튜닝 스크립트에서
+wandb_logger = WandBLogger(config)
+
+for model_config in models:
+    # 모델별 Run 생성
+    wandb_logger.init_run(model_config)
+
+    # 학습
+    trainer = train_model(model, tokenizer, ...)
+    trainer.train()  # W&B 자동 로깅
+
+    # Run 종료
+    wandb_logger.finish()
+```
+
+**참고**: `src/utils/wandb_logger.py` 코드 참조
+
+### 9. Seq2SeqTrainer vs Trainer 호환성
+
+**문제**: 처음에는 모든 모델에 `Seq2SeqTrainer`를 사용하려 했음
+
+**발견**: GitHub Issue 검색 결과, `Seq2SeqTrainer`는 Causal LM (Decoder-only)과 호환되지 않음
+- Encoder-Decoder: `predict_with_generate=True` 지원 → Seq2SeqTrainer 사용 가능
+- Causal LM: Generation을 별도로 처리해야 함 → Trainer 사용
+
+**해결**: 모델 타입에 따라 자동으로 올바른 Trainer 선택
+```python
+if model_type == "encoder_decoder":
+    # Seq2SeqTrainer (generation 지원)
+    args = Seq2SeqTrainingArguments(...)
+    trainer = Seq2SeqTrainer(...)
+
+elif model_type == "causal_lm":
+    # Trainer (language modeling)
+    args = TrainingArguments(...)
+    trainer = Trainer(...)
+```
+
+**교훈**:
+- 라이브러리 제한사항을 미리 파악하는 것이 중요
+- 아키텍처별로 적절한 도구 선택 필요
+- `llm_finetuning.py`에 자동 선택 로직 구현으로 사용자 편의성 향상
 
 ## 🐛 트러블슈팅
 
