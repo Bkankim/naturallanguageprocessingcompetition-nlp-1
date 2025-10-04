@@ -154,15 +154,80 @@ pip install rouge pandas pyyaml tqdm
 /pm:run test    # 테스트 실행
 ```
 
-## 🎯 다음 단계
+## 🎯 실험 진행 상황
+
+### ✅ 완료된 실험
+
+#### Experiment #1: koBART Baseline
+- **모델**: gogamza/kobart-base-v2
+- **최종 성능**: ROUGE Sum **94.51** (Dev Set)
+  - ROUGE-1: 51.98
+  - ROUGE-2: 26.61
+  - ROUGE-L: 47.03
+- **학습 설정**: 20 epochs, lr=5e-5, batch=8
+- **상태**: ✅ 완료
+
+#### Technical Fixes Applied
+1. **Metric Configuration Fix**
+   - 문제: `metric_for_best_model`이 config에 하드코딩되어 있어 다른 메트릭 사용 불가
+   - 해결: TrainingArguments에서 동적으로 설정하도록 수정
+
+2. **Chat Template Tokens**
+   - 문제: LLM 모델의 chat template 토큰들이 tokenizer에 추가되지 않음
+   - 해결: 모든 chat template 토큰 자동 추출 및 추가
+
+3. **QLoRA Compute Dtype Alignment**
+   - 문제: 모델별로 다른 dtype 사용 (Llama=bf16, Qwen=fp16)
+   - 해결: 모델별 compute_dtype을 모델의 기본 dtype과 일치시킴
+
+### ⏳ 진행 중인 실험
+
+#### Experiment #2: LLM Fine-tuning with QLoRA 4bit
+- **실험 시작**: 2025-10-04 14:22 KST
+- **W&B 추적**: [dialogue-summarization-finetuning](https://wandb.ai/bkan-ai/dialogue-summarization-finetuning)
+
+**모델 학습 순서** (Sequential Training):
+1. 🔄 **Llama-3.2-Korean-3B** - In Progress (Started 14:22)
+   - beomi/Llama-3.2-Korean-3B-Instruct
+   - QLoRA 4bit, bf16 compute dtype
+
+2. ⏸️ **Qwen3-4B-Instruct** - Pending
+   - Qwen/Qwen2.5-3B-Instruct
+   - QLoRA 4bit, fp16 compute dtype
+
+3. ⏸️ **Qwen2.5-7B-Instruct** - Pending
+   - Qwen/Qwen2.5-7B-Instruct
+   - QLoRA 4bit, fp16 compute dtype
+
+4. ⏸️ **Llama-3-Korean-8B** - Pending
+   - beomi/Llama-3-Open-Ko-8B-Instruct-preview
+   - QLoRA 4bit, bf16 compute dtype
+
+**학습 설정**:
+- LoRA: r=16, alpha=32, dropout=0.1
+- Target modules: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
+- Batch size: 4 (gradient_accumulation_steps=2)
+- Learning rate: 2e-4
+- Max epochs: 3
+- Early stopping: patience=2
+
+### 📊 스토리지 현황
+- **현재 사용량**: ~110GB / 150GB
+- **안전 마진**: 40GB 여유
+- **상태**: ✅ 정상
+
+### 📝 다음 단계
 
 1. ✅ 기존 코드 백업 완료
 2. ✅ 새로운 모듈화 구조 구축 완료
 3. ✅ Java 의존성 제거 완료
-4. ✅ 실제 학습 실행 및 성능 검증 완료 (Final Score: 46.8487)
+4. ✅ 실제 학습 실행 및 성능 검증 완료
 5. ✅ 실험 기록 시스템 구축 완료
-6. ✅ Git 저장소 동기화 (commit 7275339)
-7. ⏳ 다음 실험 (Hyperparameter tuning, Model upgrade 등)
+6. ✅ Git 저장소 동기화
+7. ✅ koBART Fine-tuning 완료 (ROUGE Sum: 94.51)
+8. ✅ Critical Issues 수정 완료
+9. 🔄 LLM Fine-tuning 진행 중 (4개 모델 순차 학습)
+10. ⏳ 최종 모델 선택 및 앙상블 (예정)
 
 ## 📝 라이선스
 
