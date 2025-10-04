@@ -81,23 +81,69 @@ def set_seed(seed: int = 42):
     print(f"✅ Seed 설정: {seed}")
 
 
-def check_disk_usage() -> float:
-    """현재 디스크 사용량 체크 (GB)"""
-    total_gb = 0.0
-    for directory in ['/Competition', '/opt', '/data', '/root']:
-        try:
-            result = subprocess.run(
-                ['du', '-sb', directory],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            if result.returncode == 0:
-                size_bytes = int(result.stdout.split()[0])
-                total_gb += size_bytes / (1024**3)
-        except Exception:
-            pass
-    return total_gb
+def check_disk_usage(critical_limit_gb: float = 150.0) -> float:
+    """
+    전체 루트 디스크 사용량 체크 (GB)
+
+    ⚠️  CRITICAL: 150GB 초과 시 서버 초기화됨!
+
+    Args:
+        critical_limit_gb: 임계값 (기본 150GB)
+
+    Returns:
+        현재 디스크 사용량 (GB)
+
+    Raises:
+        RuntimeError: 150GB 초과 시
+    """
+    try:
+        # du -sh / 2>/dev/null 명령 실행
+        result = subprocess.run(
+            ['du', '-sh', '/'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,  # 2>/dev/null
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode == 0:
+            # "111G\t/" 형식에서 숫자만 추출
+            size_str = result.stdout.split()[0]
+            # G, M, K 등의 단위 파싱
+            if size_str.endswith('G'):
+                total_gb = float(size_str[:-1])
+            elif size_str.endswith('M'):
+                total_gb = float(size_str[:-1]) / 1024
+            elif size_str.endswith('K'):
+                total_gb = float(size_str[:-1]) / (1024**2)
+            elif size_str.endswith('T'):
+                total_gb = float(size_str[:-1]) * 1024
+            else:
+                # 단위 없으면 bytes로 간주
+                total_gb = float(size_str) / (1024**3)
+
+            # ⚠️ CRITICAL: 150GB 체크
+            if total_gb >= critical_limit_gb:
+                raise RuntimeError(
+                    f"🚨 CRITICAL: 디스크 사용량 {total_gb:.1f}GB >= {critical_limit_gb}GB! "
+                    f"서버 초기화 위험! 즉시 중단합니다."
+                )
+
+            # 경고: 140GB 이상
+            if total_gb >= 140.0:
+                print(f"⚠️  WARNING: 디스크 사용량 {total_gb:.1f}GB (한계까지 {critical_limit_gb - total_gb:.1f}GB)")
+
+            return total_gb
+        else:
+            print(f"⚠️  디스크 체크 실패, 0GB로 간주")
+            return 0.0
+
+    except subprocess.TimeoutExpired:
+        print(f"⚠️  디스크 체크 시간 초과")
+        return 0.0
+    except Exception as e:
+        print(f"⚠️  디스크 체크 오류: {e}")
+        return 0.0
 
 
 def cleanup_hf_cache(model_name: Optional[str] = None):
@@ -116,6 +162,22 @@ def cleanup_hf_cache(model_name: Optional[str] = None):
             print(f"✅ 캐시 삭제 완료: {cache_model_name}")
 
 
+def cleanup_checkpoints(output_dir: Path, current_model: str):
+    """이전 모델 체크포인트 정리"""
+    if not output_dir.exists():
+        return
+
+    # 현재 모델 외의 모든 체크포인트 디렉토리 삭제
+    for checkpoint_dir in output_dir.iterdir():
+        if checkpoint_dir.is_dir() and current_model not in checkpoint_dir.name:
+            try:
+                shutil.rmtree(checkpoint_dir)
+                size_mb = sum(f.stat().st_size for f in checkpoint_dir.rglob('*') if f.is_file()) / (1024**2)
+                print(f"✅ 이전 체크포인트 삭제: {checkpoint_dir.name} ({size_mb:.1f}MB 확보)")
+            except Exception as e:
+                print(f"⚠️  체크포인트 삭제 실패: {checkpoint_dir.name} - {e}")
+
+
 def load_data(data_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """학습/검증 데이터 로드"""
     train_df = pd.read_csv(Path(data_path) / "train.csv")
@@ -129,39 +191,50 @@ def apply_chat_template(
     summary: str,
     template_type: str,
     system_prompt: str,
-    tokenizer: Any
+    tokenizer: Any,
+    for_training: bool = True
 ) -> Dict[str, str]:
     """
-    Chat template 적용 (Llama/Qwen)
+    Chat template 적용 (HuggingFace 공식 API 사용)
+
+    Args:
+        for_training: True면 add_generation_prompt=False (훈련용),
+                     False면 add_generation_prompt=True (추론용)
 
     Returns:
-        dict: {"input": prompt, "target": summary}
+        dict: {"input": full_text} (훈련) 또는 {"input": prompt} (추론)
     """
-    templates = {
-        "llama": {
-            "system": "<|start_header_id|>system<|end_header_id|>\n\n{}<|eot_id|>",
-            "user": "<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|>",
-            "assistant": "<|start_header_id|>assistant<|end_header_id|>\n\n"
-        },
-        "qwen": {
-            "system": "<|im_start|>system\n{}<|im_end|>\n",
-            "user": "<|im_start|>user\n{}<|im_end|>\n",
-            "assistant": "<|im_start|>assistant\n"
-        }
-    }
-
-    if template_type not in templates:
+    if template_type not in ("llama", "qwen"):
         # Encoder-Decoder는 chat template 불필요
         return {"input": dialogue, "target": summary}
 
-    tmpl = templates[template_type]
-    prompt = (
-        tmpl["system"].format(system_prompt) +
-        tmpl["user"].format(f"다음 대화를 요약하세요:\n---\n{dialogue}\n---") +
-        tmpl["assistant"]
-    )
-
-    return {"input": prompt, "target": summary}
+    if for_training:
+        # 훈련: add_generation_prompt=False (정답 포함)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"다음 대화를 요약하세요:\n---\n{dialogue}\n---"},
+            {"role": "assistant", "content": summary}  # 정답 포함
+        ]
+        full_text = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=False
+        )
+        # full_text는 이미 system + user + assistant(summary) 전체를 포함
+        return {"input": full_text, "target": ""}  # target은 빈 문자열
+    else:
+        # 추론: add_generation_prompt=True (assistant 턴 시작만)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"다음 대화를 요약하세요:\n---\n{dialogue}\n---"}
+            # assistant 제외
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        return {"input": prompt, "target": ""}
 
 
 def prepare_dataset(
@@ -182,31 +255,74 @@ def prepare_dataset(
         dialogue = row["dialogue"]
         summary = row["summary"]
 
-        # Chat template 적용
+        # Chat template 적용 (훈련용)
         templated = apply_chat_template(
-            dialogue, summary, template_type, system_prompt, tokenizer
+            dialogue, summary, template_type, system_prompt, tokenizer,
+            for_training=True
         )
 
-        # Tokenize
-        inputs = tokenizer(
-            templated["input"],
-            max_length=max_input_length,
-            truncation=True,
-            padding=False
-        )
+        if template_type:  # Decoder-only (Llama, Qwen)
+            # ✅ HuggingFace 공식 API 사용 (add_generation_prompt=False)
+            # full_text는 이미 system + user + assistant(summary) 전체를 포함
+            full_text = templated["input"]
 
-        labels = tokenizer(
-            templated["target"],
-            max_length=max_target_length,
-            truncation=True,
-            padding=False
-        )
+            # 전체 토크나이즈
+            full_ids = tokenizer(
+                full_text,
+                max_length=max_input_length + max_target_length,
+                truncation=True,
+                padding=False,
+                add_special_tokens=True
+            )["input_ids"]
 
-        data_dicts.append({
-            "input_ids": inputs["input_ids"],
-            "attention_mask": inputs["attention_mask"],
-            "labels": labels["input_ids"]
-        })
+            # Prompt 길이 계산 (assistant 턴 시작까지)
+            # add_generation_prompt=True로 프롬프트만 생성
+            messages_for_prompt = [
+                {"role": "system", "content": config["data"]["system_prompt"]},
+                {"role": "user", "content": f"다음 대화를 요약하세요:\n---\n{dialogue}\n---"}
+            ]
+            prompt_only = tokenizer.apply_chat_template(
+                messages_for_prompt,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            prompt_ids = tokenizer(
+                prompt_only,
+                max_length=max_input_length,
+                truncation=True,
+                padding=False,
+                add_special_tokens=True
+            )["input_ids"]
+            prompt_length = len(prompt_ids)
+
+            # Labels: prompt 부분은 -100, response 부분만 학습
+            input_ids = full_ids
+            labels = [-100] * prompt_length + full_ids[prompt_length:]
+
+            data_dicts.append({
+                "input_ids": input_ids,
+                "labels": labels
+            })
+        else:  # Encoder-Decoder (koBART, koT5)
+            inputs = tokenizer(
+                templated["input"],
+                max_length=max_input_length,
+                truncation=True,
+                padding=False
+            )
+
+            labels = tokenizer(
+                templated["target"],
+                max_length=max_target_length,
+                truncation=True,
+                padding=False
+            )
+
+            data_dicts.append({
+                "input_ids": inputs["input_ids"],
+                "attention_mask": inputs["attention_mask"],
+                "labels": labels["input_ids"]
+            })
 
     return Dataset.from_list(data_dicts)
 
@@ -228,20 +344,40 @@ def load_model_and_tokenizer(
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+
+    # Causal LM은 left-padding 필수 (generation 시 올바른 결과 보장)
+    if model_type == "causal_lm":
+        tokenizer.padding_side = "left"
+        # EOS/PAD 동기화
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+    else:
+        # Encoder-Decoder는 right-padding
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
     # Special tokens 추가
     special_tokens = config["tokenizer"]["special_tokens"]
+
+    # Chat template 토큰 추가 (모델별)
+    chat_template_type = model_config.get("chat_template_type")
+    if chat_template_type and "chat_template_tokens" in config["tokenizer"]:
+        chat_tokens = config["tokenizer"]["chat_template_tokens"].get(chat_template_type, [])
+        special_tokens = special_tokens + chat_tokens
+
     tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
 
     # Model loading
     if use_qlora:
-        # QLoRA 4bit config
+        # QLoRA 4bit config - compute dtype은 모델 dtype과 일치시킴
         qlora_config = config["qlora"]
+        # 모델별 dtype에 맞춰 compute dtype 설정 (Llama=bf16, Qwen=fp16)
+        compute_dtype = torch.bfloat16 if model_config.get("use_bf16", False) else torch.float16
+
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=qlora_config["load_in_4bit"],
-            bnb_4bit_compute_dtype=getattr(torch, qlora_config["bnb_4bit_compute_dtype"]),
+            bnb_4bit_compute_dtype=compute_dtype,
             bnb_4bit_quant_type=qlora_config["bnb_4bit_quant_type"],
             bnb_4bit_use_double_quant=qlora_config["bnb_4bit_use_double_quant"]
         )
@@ -257,6 +393,14 @@ def load_model_and_tokenizer(
             )
         else:
             raise ValueError(f"QLoRA는 causal_lm만 지원: {model_type}")
+
+        # Resize token embeddings BEFORE prepare_model_for_kbit_training
+        # (special tokens 추가했으므로 필수!)
+        model.resize_token_embeddings(len(tokenizer))
+
+        # ✅ gradient_checkpointing 사용 시 use_cache는 False여야 함
+        # (학습 시 KV cache 불필요 + gradient_checkpointing과 충돌)
+        model.config.use_cache = False
 
         # Prepare for k-bit training
         model = prepare_model_for_kbit_training(model)
@@ -279,9 +423,9 @@ def load_model_and_tokenizer(
     else:
         # Full fine-tuning (Encoder-Decoder)
         if model_type == "encoder_decoder":
+            # FP32로 로드하고 Trainer가 mixed precision 관리하도록 함
             model = AutoModelForSeq2SeqLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.float16
+                model_name
             )
         else:
             raise ValueError(f"Full tuning은 encoder_decoder만 지원: {model_type}")
@@ -321,6 +465,136 @@ def compute_metrics(eval_preds, tokenizer):
             rouge_scores["rouge-l"]["f"]
         )
     }
+
+
+def clean_predictions(predictions: List[str], tokenizer: Any) -> List[str]:
+    """생성 결과에서 불필요한 모델 토큰 제거 (Baseline 방식)"""
+    remove_tokens = [
+        '<usr>',
+        tokenizer.bos_token,
+        tokenizer.eos_token,
+        tokenizer.pad_token,
+        # Chat template 토큰 (Llama)
+        '<|start_header_id|>',
+        '<|end_header_id|>',
+        '<|eot_id|>',
+        # Chat template 토큰 (Qwen)
+        '<|im_start|>',
+        '<|im_end|>',
+        # 역할 토큰
+        'system',
+        'user',
+        'assistant',
+    ]
+
+    cleaned = predictions.copy()
+    for token in remove_tokens:
+        if token:
+            cleaned = [s.replace(token, " ") for s in cleaned]
+
+    # 연속된 공백 제거
+    cleaned = [" ".join(s.split()) for s in cleaned]
+    return cleaned
+
+
+def run_inference_on_dev(
+    model: Any,
+    tokenizer: Any,
+    dev_df: pd.DataFrame,
+    device: str,
+    model_config: Dict[str, Any],
+    config: Dict[str, Any],
+    batch_size: int = 4,
+    max_new_tokens: int = 100,
+    num_beams: int = 4
+) -> Tuple[List[str], List[str]]:
+    """Dev set으로 추론 실행 (Chat Template 적용)"""
+    model.eval()
+
+    dialogues = dev_df['dialogue'].tolist()
+    references = dev_df['summary'].tolist()
+    predictions = []
+
+    # Chat template 타입 가져오기
+    template_type = model_config.get("chat_template_type", None)
+    system_prompt = config["data"]["system_prompt"]
+
+    print(f"\n🔄 Dev set 추론 시작 (samples={len(dialogues)}, batch_size={batch_size})")
+    if template_type:
+        print(f"   ✅ Chat template: {template_type}")
+        # Causal LM은 left-padding + left-truncation 필수
+        # - left-padding: 배치 생성 시 올바른 결과 보장
+        # - left-truncation: assistant 헤더 보존 (긴 대화 시 중요!)
+        tokenizer.padding_side = "left"
+        tokenizer.truncation_side = "left"
+        print(f"   ✅ Padding/Truncation side: left (assistant 헤더 보존)")
+
+    for i in tqdm(range(0, len(dialogues), batch_size), desc="Inference"):
+        batch_dialogues = dialogues[i:i+batch_size]
+
+        # Chat template 적용 (Causal LM만)
+        if template_type:
+            batch_prompts = []
+            for dialogue in batch_dialogues:
+                # 추론용: add_generation_prompt=True
+                templated = apply_chat_template(
+                    dialogue,
+                    "",  # summary는 빈 문자열 (생성할 것이므로)
+                    template_type,
+                    system_prompt,
+                    tokenizer,
+                    for_training=False  # 추론 모드
+                )
+                batch_prompts.append(templated["input"])
+        else:
+            # Encoder-Decoder는 raw dialogue
+            batch_prompts = batch_dialogues
+
+        # Tokenize
+        inputs = tokenizer(
+            batch_prompts,
+            max_length=1024,  # 512 → 1024 (prompt truncation 6.81% → 0% 해결)
+            truncation=True,
+            padding=True,
+            return_tensors="pt"
+        )
+
+        # Remove token_type_ids if present (BART doesn't use it)
+        inputs = {k: v.to(device) for k, v in inputs.items() if k != 'token_type_ids'}
+
+        # Generate
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                num_beams=num_beams,
+                early_stopping=True,
+                no_repeat_ngram_size=3,
+                length_penalty=0.9,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id
+            )
+
+        # Decode - Decoder-only는 input 제거, Encoder-Decoder는 그대로
+        if template_type:
+            # Decoder-only: outputs에 input_ids 포함됨 → 생성 부분만 추출
+            # outputs shape: [batch_size, total_length]
+            # inputs['input_ids'] shape: [batch_size, prompt_length]
+            input_length = inputs['input_ids'].shape[1]
+            generated_ids = outputs[:, input_length:]  # 생성된 부분만
+            batch_preds = tokenizer.batch_decode(generated_ids, skip_special_tokens=False)
+        else:
+            # Encoder-Decoder: outputs는 생성된 부분만 포함
+            batch_preds = tokenizer.batch_decode(outputs, skip_special_tokens=False)
+
+        predictions.extend(batch_preds)
+
+    # Clean predictions (remove only model tokens, keep data tokens)
+    predictions = clean_predictions(predictions, tokenizer)
+
+    print(f"✅ 추론 완료: {len(predictions)}개 생성")
+    return predictions, references
 
 
 def train_model(
@@ -379,7 +653,7 @@ def train_model(
             generation_max_length=training_config.get("generation_max_length", 100),
             generation_num_beams=training_config.get("generation_num_beams", 4),
             save_strategy=training_config.get("save_strategy", "epoch"),
-            evaluation_strategy=training_config.get("evaluation_strategy", "epoch"),
+            eval_strategy=training_config.get("evaluation_strategy", "epoch"),
             save_total_limit=training_config.get("save_total_limit", 2),
             load_best_model_at_end=training_config.get("load_best_model_at_end", True),
             metric_for_best_model=training_config.get("metric_for_best_model", "rouge_sum"),
@@ -407,7 +681,7 @@ def train_model(
         )
 
     elif model_type == "causal_lm":
-        # Trainer (language modeling)
+        # Trainer (eval_loss 기반 - 일반화에 유리)
         args = TrainingArguments(
             output_dir=str(output_dir),
             num_train_epochs=training_config["num_train_epochs"],
@@ -425,10 +699,10 @@ def train_model(
             fp16=use_fp16,
             gradient_checkpointing=training_config.get("gradient_checkpointing", True),
             save_strategy=training_config.get("save_strategy", "epoch"),
-            evaluation_strategy=training_config.get("evaluation_strategy", "epoch"),
+            eval_strategy=training_config.get("evaluation_strategy", "epoch"),
             save_total_limit=training_config.get("save_total_limit", 2),
             load_best_model_at_end=training_config.get("load_best_model_at_end", True),
-            metric_for_best_model=training_config.get("metric_for_best_model", "eval_loss"),
+            metric_for_best_model="eval_loss",
             greater_is_better=False,
             logging_steps=training_config.get("logging_steps", 10),
             logging_first_step=training_config.get("logging_first_step", True),
@@ -436,9 +710,11 @@ def train_model(
             run_name=run_name
         )
 
-        data_collator = DataCollatorForLanguageModeling(
+        data_collator = DataCollatorForSeq2Seq(
             tokenizer=tokenizer,
-            mlm=False  # Causal LM
+            model=model,
+            label_pad_token_id=-100,
+            pad_to_multiple_of=8
         )
 
         trainer = Trainer(
@@ -538,28 +814,94 @@ def main():
             )
             print(f"✅ 데이터셋 준비 완료: Train {len(train_dataset)}, Eval {len(eval_dataset)}")
 
-            # Train
+            # 1. Train
             trainer = train_model(
                 model, tokenizer, train_dataset, eval_dataset,
                 model_config, config, wandb_logger
             )
 
+            # 2. Inference on Dev set
+            print(f"\n{'='*80}")
+            print(f"📊 Dev Set 평가 시작: {nickname}")
+            print(f"{'='*80}\n")
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            predictions, references = run_inference_on_dev(
+                model, tokenizer, dev_df, device,
+                model_config, config,
+                batch_size=4,
+                max_new_tokens=150,  # 100 → 150 (summary 생성 여유 확보)
+                num_beams=4
+            )
+
+            # 3. Evaluate ROUGE scores
+            print("\n📈 ROUGE 평가 중 (Mecab tokenization)...")
+            rouge_scores = calculate_rouge_scores(
+                predictions, references,
+                tokenization_mode='mecab'
+            )
+
+            # Print results
+            print(f"\n{'='*80}")
+            print(f"📊 {nickname} 최종 ROUGE 점수")
+            print(f"{'='*80}")
+            print(f"ROUGE-1 F1: {rouge_scores['rouge-1']['f']:.4f}")
+            print(f"ROUGE-2 F1: {rouge_scores['rouge-2']['f']:.4f}")
+            print(f"ROUGE-L F1: {rouge_scores['rouge-l']['f']:.4f}")
+            rouge_sum = (rouge_scores['rouge-1']['f'] +
+                        rouge_scores['rouge-2']['f'] +
+                        rouge_scores['rouge-l']['f'])
+            print(f"ROUGE SUM:  {rouge_sum:.4f}")
+            print(f"{'='*80}\n")
+
+            # 4. Log results to CSV
+            results_file = Path(config["general"]["output_base_dir"]) / "finetuning_results.csv"
+            result_row = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "model": nickname,
+                "model_name": model_config["model_name"],
+                "rouge_1_f1": rouge_scores['rouge-1']['f'],
+                "rouge_2_f1": rouge_scores['rouge-2']['f'],
+                "rouge_l_f1": rouge_scores['rouge-l']['f'],
+                "rouge_sum": rouge_sum
+            }
+
+            # Append to CSV
+            import csv
+            file_exists = results_file.exists()
+            with open(results_file, 'a', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=result_row.keys())
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow(result_row)
+            print(f"✅ 결과 저장: {results_file}")
+
             # W&B Run 종료
             wandb_logger.finish()
 
-            # Cleanup
+            # 5. Cleanup - 체크포인트 완전 삭제
+            print(f"\n🗑️  체크포인트 삭제 중...")
+            checkpoint_dir = Path(config["general"]["output_base_dir"]) / nickname
+            if checkpoint_dir.exists():
+                size_before = sum(f.stat().st_size for f in checkpoint_dir.rglob('*') if f.is_file()) / (1024**3)
+                shutil.rmtree(checkpoint_dir)
+                print(f"✅ 체크포인트 삭제 완료: {nickname} ({size_before:.2f}GB 확보)")
+
+            # Cleanup model & memory
             del model
             del tokenizer
             del trainer
             gc.collect()
             torch.cuda.empty_cache()
+            print("✅ 메모리 정리 완료")
 
-            # Cleanup cache
-            if config.get("disk_management", {}).get("auto_cleanup_cache", False):
-                cleanup_hf_cache(model_config["model_name"])
+            # Cleanup model cache
+            print(f"\n🗑️  모델 캐시 삭제 중...")
+            cleanup_hf_cache(model_config["model_name"])
 
+            # Final disk check
             disk_usage_after = check_disk_usage()
-            print(f"💾 정리 후 디스크 사용량: {disk_usage_after:.2f} GB\n")
+            print(f"💾 최종 디스크 사용량: {disk_usage_after:.2f} GB\n")
 
         except Exception as e:
             print(f"❌ {nickname} 학습 실패: {e}")

@@ -4,28 +4,30 @@
 general:
   data_path: "../data/"
   output_base_dir: "./checkpoints/llm_finetuning"
-  max_disk_usage_gb: 100  # 파인튜닝은 체크포인트 저장으로 더 필요
+  max_disk_usage_gb: 120  # 150GB 한계 고려 (80% 기준)
 
 # 파인튜닝 대상 모델
 models:
   # === Encoder-Decoder 모델 (Baseline 비교용) ===
-  - model_name: "digit82/kobart-summarization"
-    nickname: "koBART-summarization"
-    description: "Encoder-Decoder baseline (pretrained on summarization)"
-    model_type: "encoder_decoder"
-    use_qlora: false
-    learning_rate: 1.0e-5
-    batch_size: 8
-    target_modules: null  # 전체 파인튜닝
+  # koBART - 이미 완료
+  # - model_name: "digit82/kobart-summarization"
+  #   nickname: "koBART-summarization"
+  #   description: "Encoder-Decoder baseline (pretrained on summarization)"
+  #   model_type: "encoder_decoder"
+  #   use_qlora: false
+  #   learning_rate: 1.0e-5
+  #   batch_size: 8
+  #   target_modules: null  # 전체 파인튜닝
 
-  - model_name: "paust/pko-t5-base"
-    nickname: "koT5-base"
-    description: "Encoder-Decoder T5 baseline"
-    model_type: "encoder_decoder"
-    use_qlora: false
-    learning_rate: 1.0e-5
-    batch_size: 8
-    target_modules: null  # 전체 파인튜닝
+  # koT5 - 제외 (오류 발생)
+  # - model_name: "paust/pko-t5-base"
+  #   nickname: "koT5-base"
+  #   description: "Encoder-Decoder T5 baseline"
+  #   model_type: "encoder_decoder"
+  #   use_qlora: false
+  #   learning_rate: 1.0e-5
+  #   batch_size: 8
+  #   target_modules: null  # 전체 파인튜닝
 
   # === Decoder-only LLM (QLoRA) ===
   - model_name: "Bllossom/llama-3.2-Korean-Bllossom-3B"
@@ -35,7 +37,7 @@ models:
     use_qlora: true
     chat_template_type: "llama"
     learning_rate: 2.0e-4     # QLoRA 표준 (3e-4 → 2e-4)
-    batch_size: 2
+    batch_size: 4
     lora_dropout: 0.1         # 13B 이하는 0.1
     use_bf16: true            # Llama-Korean 권장 bf16
     use_fp16: false
@@ -47,7 +49,7 @@ models:
     use_qlora: true
     chat_template_type: "qwen"
     learning_rate: 2.0e-4     # QLoRA 표준 (3e-4 → 2e-4)
-    batch_size: 2
+    batch_size: 4
     lora_dropout: 0.1
     use_bf16: false           # Qwen은 fp16 권장
     use_fp16: true
@@ -96,8 +98,8 @@ data:
 
 # Tokenizer 설정
 tokenizer:
-  encoder_max_len: 512
-  decoder_max_len: 100
+  encoder_max_len: 1024  # LLM용 증가 (512→1024): prompt truncation 6.07%→0.11%
+  decoder_max_len: 200   # 여유 확보 (100→200)
   special_tokens:
     - "#Person1#"
     - "#Person2#"
@@ -105,6 +107,16 @@ tokenizer:
     - "#PhoneNumber#"
     - "#Address#"
     - "#PassportNumber#"
+
+  # Chat template 토큰 (모델별로 자동 추가됨)
+  chat_template_tokens:
+    llama:
+      - "<|start_header_id|>"
+      - "<|end_header_id|>"
+      - "<|eot_id|>"
+    qwen:
+      - "<|im_start|>"
+      - "<|im_end|>"
 
 # QLoRA 설정 (4bit 양자화)
 qlora:
@@ -132,7 +144,7 @@ lora:
 # Training Arguments (QLoRA paper 기반)
 training:
   # 기본 설정
-  num_train_epochs: 3
+  num_train_epochs: 1
 
   # 배치 크기 (QLoRA 4bit)
   per_device_train_batch_size: 1  # 모델별로 위에서 설정
@@ -163,10 +175,10 @@ training:
   # 저장 & 평가
   save_strategy: "epoch"
   evaluation_strategy: "epoch"
-  save_total_limit: 2        # 최대 2개 체크포인트만 유지
+  save_total_limit: 1        # 최대 1개 체크포인트만 유지 (디스크 절약)
   load_best_model_at_end: true
-  metric_for_best_model: "rouge_sum"
-  greater_is_better: true
+  # metric_for_best_model은 모델 타입별로 코드에서 자동 설정
+  # encoder_decoder: "rouge_sum", causal_lm: "eval_loss"
 
   # 로깅
   logging_steps: 10
