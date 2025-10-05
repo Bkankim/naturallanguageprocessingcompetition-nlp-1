@@ -42,7 +42,7 @@ from transformers import (
     TrainingArguments,
     Trainer,
     DataCollatorForSeq2Seq,
-    DataCollatorForLanguageModeling
+    TrainerCallback
 )
 from peft import (
     LoraConfig,
@@ -51,6 +51,15 @@ from peft import (
     TaskType
 )
 from datasets import Dataset
+
+# TRL import (SFTTrainer)
+try:
+    from trl import SFTTrainer, SFTConfig
+    TRL_AVAILABLE = True
+    print("✅ TRL 사용 가능")
+except ImportError:
+    TRL_AVAILABLE = False
+    print("⚠️  TRL not installed - SFTTrainer 사용 불가")
 
 # 프로젝트 모듈 import
 sys.path.append(str(Path(__file__).parent.parent))
@@ -135,14 +144,17 @@ def check_disk_usage(critical_limit_gb: float = 150.0) -> float:
 
             return total_gb
         else:
-            print(f"⚠️  디스크 체크 실패, 0GB로 간주")
+            print(f"⚠️  디스크 체크 실패 (returncode={result.returncode})")
+            print(f"⚠️  실제 디스크 사용량 확인 불가 - 수동 확인 권장: du -sh /")
             return 0.0
 
     except subprocess.TimeoutExpired:
-        print(f"⚠️  디스크 체크 시간 초과")
+        print(f"⚠️  디스크 체크 시간 초과 (60초)")
+        print(f"⚠️  실제 디스크 사용량 확인 불가 - 수동 확인 권장: du -sh /")
         return 0.0
     except Exception as e:
         print(f"⚠️  디스크 체크 오류: {e}")
+        print(f"⚠️  실제 디스크 사용량 확인 불가 - 수동 확인 권장: du -sh /")
         return 0.0
 
 
@@ -160,22 +172,6 @@ def cleanup_hf_cache(model_name: Optional[str] = None):
         if cache_model_dir.exists():
             shutil.rmtree(cache_model_dir)
             print(f"✅ 캐시 삭제 완료: {cache_model_name}")
-
-
-def cleanup_checkpoints(output_dir: Path, current_model: str):
-    """이전 모델 체크포인트 정리"""
-    if not output_dir.exists():
-        return
-
-    # 현재 모델 외의 모든 체크포인트 디렉토리 삭제
-    for checkpoint_dir in output_dir.iterdir():
-        if checkpoint_dir.is_dir() and current_model not in checkpoint_dir.name:
-            try:
-                shutil.rmtree(checkpoint_dir)
-                size_mb = sum(f.stat().st_size for f in checkpoint_dir.rglob('*') if f.is_file()) / (1024**2)
-                print(f"✅ 이전 체크포인트 삭제: {checkpoint_dir.name} ({size_mb:.1f}MB 확보)")
-            except Exception as e:
-                print(f"⚠️  체크포인트 삭제 실패: {checkpoint_dir.name} - {e}")
 
 
 def load_data(data_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -275,29 +271,41 @@ def prepare_dataset(
                 add_special_tokens=True
             )["input_ids"]
 
-            # Prompt 길이 계산 (assistant 턴 시작까지)
-            # add_generation_prompt=True로 프롬프트만 생성
-            messages_for_prompt = [
-                {"role": "system", "content": config["data"]["system_prompt"]},
-                {"role": "user", "content": f"다음 대화를 요약하세요:\n---\n{dialogue}\n---"}
-            ]
-            prompt_only = tokenizer.apply_chat_template(
-                messages_for_prompt,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            prompt_ids = tokenizer(
-                prompt_only,
-                max_length=max_input_length,
-                truncation=True,
-                padding=False,
-                add_special_tokens=True
-            )["input_ids"]
-            prompt_length = len(prompt_ids)
+            # Assistant 헤더 위치 찾기 (모델별 헤더 다름)
+            # Llama: "<|start_header_id|>assistant<|end_header_id|>\n\n"
+            # Qwen: "<|im_start|>assistant\n"
+            if template_type == "llama":
+                assistant_header = "<|start_header_id|>assistant<|end_header_id|>\n\n"
+            elif template_type == "qwen":
+                assistant_header = "<|im_start|>assistant\n"
+            else:
+                assistant_header = ""
 
-            # Labels: prompt 부분은 -100, response 부분만 학습
-            input_ids = full_ids
-            labels = [-100] * prompt_length + full_ids[prompt_length:]
+            # Assistant 헤더 토큰 ID 리스트 생성
+            assistant_header_ids = tokenizer.encode(
+                assistant_header,
+                add_special_tokens=False
+            )
+
+            # full_ids에서 assistant 헤더 위치 검색
+            prompt_length = 0
+            for i in range(len(full_ids) - len(assistant_header_ids) + 1):
+                if full_ids[i:i+len(assistant_header_ids)] == assistant_header_ids:
+                    # Assistant 헤더를 찾음 → 헤더 끝부터 학습 대상
+                    prompt_length = i + len(assistant_header_ids)
+                    break
+
+            # Labels 계산
+            if prompt_length == 0 or prompt_length >= len(full_ids):
+                # Assistant 헤더를 못 찾았거나, truncation으로 잘린 경우
+                # → 전체를 -100으로 처리 (학습 제외)
+                input_ids = full_ids
+                labels = [-100] * len(full_ids)
+            else:
+                # 정상적으로 찾은 경우
+                # → Prompt 부분은 -100, Response 부분만 학습
+                input_ids = full_ids
+                labels = [-100] * prompt_length + full_ids[prompt_length:]
 
             data_dicts.append({
                 "input_ids": input_ids,
@@ -506,20 +514,30 @@ def run_inference_on_dev(
     config: Dict[str, Any],
     batch_size: int = 4,
     max_new_tokens: int = 100,
-    num_beams: int = 4
+    num_beams: int = 4,
+    is_test: bool = False
 ) -> Tuple[List[str], List[str]]:
-    """Dev set으로 추론 실행 (Chat Template 적용)"""
+    """
+    Dev/Test set 추론 실행 (Chat Template 적용)
+
+    Args:
+        is_test: True면 Test mode (references 없음), False면 Dev mode
+
+    Returns:
+        (predictions, references) 튜플 (Test mode에서는 references는 빈 리스트)
+    """
     model.eval()
 
     dialogues = dev_df['dialogue'].tolist()
-    references = dev_df['summary'].tolist()
+    references = dev_df['summary'].tolist() if 'summary' in dev_df.columns else []
     predictions = []
 
     # Chat template 타입 가져오기
     template_type = model_config.get("chat_template_type", None)
     system_prompt = config["data"]["system_prompt"]
 
-    print(f"\n🔄 Dev set 추론 시작 (samples={len(dialogues)}, batch_size={batch_size})")
+    dataset_name = "Test" if is_test else "Dev"
+    print(f"\n🔄 {dataset_name} set 추론 시작 (samples={len(dialogues)}, batch_size={batch_size})")
     if template_type:
         print(f"   ✅ Chat template: {template_type}")
         # Causal LM은 left-padding + left-truncation 필수
@@ -597,6 +615,74 @@ def run_inference_on_dev(
     return predictions, references
 
 
+class DataCollatorForSupervisedDataset(object):
+    """
+    Korean_DCS_2024 베이스라인 DataCollator
+
+    SFTTrainer용 Custom DataCollator
+    - input_ids와 labels만 사용 (간결함)
+    - labels는 -100으로 패딩 (loss 계산 제외)
+    - attention_mask 자동 생성
+    """
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+    def __call__(self, instances):
+        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+        input_ids = torch.nn.utils.rnn.pad_sequence(
+            [torch.tensor(ids) for ids in input_ids],
+            batch_first=True,
+            padding_value=self.tokenizer.pad_token_id
+        )
+        labels = torch.nn.utils.rnn.pad_sequence(
+            [torch.tensor(lbls) for lbls in labels],
+            batch_first=True,
+            padding_value=-100
+        )
+        return dict(
+            input_ids=input_ids,
+            labels=labels,
+            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
+        )
+
+
+class GradientClippingCallback(TrainerCallback):
+    """
+    Gradient Clipping 비율을 추적하는 Callback
+
+    매 로깅 스텝마다:
+    - Clipping 발생 여부 추적
+    - Clipping 비율 계산 (clipped steps / total steps)
+    - W&B에 실시간 로깅
+    """
+
+    def __init__(self, max_grad_norm: float):
+        self.max_grad_norm = max_grad_norm
+        self.total_steps = 0
+        self.clipped_steps = 0
+        self.grad_norms = []
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """로깅 시점에 grad_norm 캡처"""
+        if logs and "grad_norm" in logs:
+            grad_norm = logs["grad_norm"]
+            self.grad_norms.append(grad_norm)
+            self.total_steps += 1
+
+            # Clipping 발생 여부
+            if grad_norm > self.max_grad_norm:
+                self.clipped_steps += 1
+
+            # Clipping 비율 계산
+            clip_ratio = self.clipped_steps / self.total_steps if self.total_steps > 0 else 0.0
+
+            # 추가 메트릭 로깅
+            logs["grad_clip_ratio"] = clip_ratio
+            logs["grad_clip_count"] = self.clipped_steps
+            logs["grad_norm_mean"] = sum(self.grad_norms) / len(self.grad_norms) if self.grad_norms else 0.0
+
+
 def train_model(
     model: Any,
     tokenizer: Any,
@@ -629,6 +715,10 @@ def train_model(
 
     # W&B run name 생성
     run_name = wandb_logger._create_run_name(model_config) if wandb_logger.enabled else f"{nickname}"
+
+    # Gradient Clipping Callback 생성 (config에서 max_grad_norm 읽기)
+    max_grad_norm = training_config.get("max_grad_norm", 1.0)
+    grad_clip_callback = GradientClippingCallback(max_grad_norm)
 
     # Encoder-Decoder vs Causal LM에 따라 다른 Trainer 사용
     if model_type == "encoder_decoder":
@@ -677,53 +767,75 @@ def train_model(
             eval_dataset=eval_dataset,
             tokenizer=tokenizer,
             data_collator=data_collator,
-            compute_metrics=lambda eval_preds: compute_metrics(eval_preds, tokenizer)
+            compute_metrics=lambda eval_preds: compute_metrics(eval_preds, tokenizer),
+            callbacks=[grad_clip_callback]
         )
 
     elif model_type == "causal_lm":
-        # Trainer (eval_loss 기반 - 일반화에 유리)
-        args = TrainingArguments(
+        # SFTTrainer (Korean_DCS_2024 베이스라인)
+        if not TRL_AVAILABLE:
+            raise ImportError("TRL not installed. Run: pip install trl")
+
+        # gradient_checkpointing_kwargs 가져오기
+        gradient_checkpointing_kwargs = training_config.get("gradient_checkpointing_kwargs", {"use_reentrant": False})
+
+        args = SFTConfig(
+            # 기본 설정 (Korean_DCS_2024 베이스라인)
             output_dir=str(output_dir),
+            overwrite_output_dir=True,  # 출력 디렉토리 덮어쓰기
+            do_train=True,
+            do_eval=True,
+            # 학습 설정
             num_train_epochs=training_config["num_train_epochs"],
+            max_steps=-1,  # Epoch 기반 학습 (-1 = 무제한)
             per_device_train_batch_size=batch_size,
             per_device_eval_batch_size=training_config["per_device_eval_batch_size"],
             gradient_accumulation_steps=training_config["gradient_accumulation_steps"],
+            # 옵티마이저
             learning_rate=lr,
             warmup_ratio=training_config["warmup_ratio"],
             lr_scheduler_type=training_config["lr_scheduler_type"],
+            weight_decay=training_config.get("weight_decay", 0.1),
             optim=training_config["optim"],
             adam_beta1=training_config.get("adam_beta1", 0.9),
             adam_beta2=training_config.get("adam_beta2", 0.999),
-            max_grad_norm=training_config.get("max_grad_norm", 0.3),
+            max_grad_norm=training_config.get("max_grad_norm", 1.2),
+            # Float precision
             bf16=use_bf16,
             fp16=use_fp16,
+            # Gradient checkpointing
             gradient_checkpointing=training_config.get("gradient_checkpointing", True),
+            gradient_checkpointing_kwargs=gradient_checkpointing_kwargs,
+            # 저장 & 평가
             save_strategy=training_config.get("save_strategy", "epoch"),
             eval_strategy=training_config.get("evaluation_strategy", "epoch"),
             save_total_limit=training_config.get("save_total_limit", 2),
             load_best_model_at_end=training_config.get("load_best_model_at_end", True),
             metric_for_best_model="eval_loss",
             greater_is_better=False,
+            # 로깅
+            log_level="info",
             logging_steps=training_config.get("logging_steps", 10),
             logging_first_step=training_config.get("logging_first_step", True),
             report_to="wandb" if wandb_logger.enabled else "none",
-            run_name=run_name
+            run_name=run_name,
+            # SFT 특화 파라미터 (Korean_DCS_2024)
+            max_seq_length=config["tokenizer"].get("encoder_max_len", 1024),
+            packing=True,  # 효율성 향상 (2-3x speedup)
+            seed=42
         )
 
-        data_collator = DataCollatorForSeq2Seq(
-            tokenizer=tokenizer,
-            model=model,
-            label_pad_token_id=-100,
-            pad_to_multiple_of=8
-        )
+        # Korean_DCS_2024 DataCollator
+        data_collator = DataCollatorForSupervisedDataset(tokenizer)
 
-        trainer = Trainer(
+        trainer = SFTTrainer(
             model=model,
+            tokenizer=tokenizer,  # 명시적 전달 (필수)
             args=args,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
-            tokenizer=tokenizer,
-            data_collator=data_collator
+            data_collator=data_collator,
+            callbacks=[grad_clip_callback]
         )
 
     else:
@@ -731,7 +843,7 @@ def train_model(
 
     print(f"\n🚀 학습 시작: {nickname}")
     print(f"   Model Type: {model_type}")
-    print(f"   Trainer: {'Seq2SeqTrainer' if model_type == 'encoder_decoder' else 'Trainer'}")
+    print(f"   Trainer: {'Seq2SeqTrainer' if model_type == 'encoder_decoder' else 'SFTTrainer (packing=True)'}")
     print(f"   LR: {lr}, Batch: {batch_size}, Float: {'bf16' if use_bf16 else 'fp16'}")
     print(f"   Output: {output_dir}\n")
 
@@ -820,72 +932,67 @@ def main():
                 model_config, config, wandb_logger
             )
 
-            # 2. Inference on Dev set
+            # 2. Inference on Test set
             print(f"\n{'='*80}")
-            print(f"📊 Dev Set 평가 시작: {nickname}")
+            print(f"📊 Test Set 추론 시작: {nickname}")
             print(f"{'='*80}\n")
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            predictions, references = run_inference_on_dev(
-                model, tokenizer, dev_df, device,
+
+            # Test 데이터 로드
+            test_file = Path(config["general"]["data_path"]) / "test.csv"
+            if not test_file.exists():
+                print(f"⚠️  Test 파일 없음: {test_file}")
+                print(f"   Test 추론을 건너뛰고 다음 모델로 진행합니다.\n")
+                wandb_logger.finish()
+                continue
+
+            test_df = pd.read_csv(test_file)
+            print(f"✅ Test 데이터 로드: {len(test_df)}개 샘플\n")
+
+            # Test set 추론 (references 없음)
+            predictions, _ = run_inference_on_dev(
+                model, tokenizer, test_df, device,
                 model_config, config,
                 batch_size=4,
-                max_new_tokens=150,  # 100 → 150 (summary 생성 여유 확보)
-                num_beams=4
+                max_new_tokens=150,
+                num_beams=4,
+                is_test=True  # Test mode
             )
 
-            # 3. Evaluate ROUGE scores
-            print("\n📈 ROUGE 평가 중 (Mecab tokenization)...")
-            rouge_scores = calculate_rouge_scores(
-                predictions, references,
-                tokenization_mode='mecab'
-            )
+            # 3. Save Submission CSV
+            submission_dir = Path(config["general"]["output_base_dir"]) / "submissions"
+            submission_dir.mkdir(parents=True, exist_ok=True)
+            submission_file = submission_dir / f"{nickname}_submission.csv"
 
-            # Print results
+            submission_df = pd.DataFrame({
+                "fname": test_df['fname'].tolist(),
+                "summary": predictions
+            })
+            submission_df.to_csv(submission_file, index=False)
+
             print(f"\n{'='*80}")
-            print(f"📊 {nickname} 최종 ROUGE 점수")
+            print(f"💾 Submission 파일 저장 완료")
             print(f"{'='*80}")
-            print(f"ROUGE-1 F1: {rouge_scores['rouge-1']['f']:.4f}")
-            print(f"ROUGE-2 F1: {rouge_scores['rouge-2']['f']:.4f}")
-            print(f"ROUGE-L F1: {rouge_scores['rouge-l']['f']:.4f}")
-            rouge_sum = (rouge_scores['rouge-1']['f'] +
-                        rouge_scores['rouge-2']['f'] +
-                        rouge_scores['rouge-l']['f'])
-            print(f"ROUGE SUM:  {rouge_sum:.4f}")
+            print(f"경로: {submission_file}")
+            print(f"샘플 수: {len(submission_df)}")
+            print(f"\n샘플 (처음 3개):")
+            print(submission_df.head(3))
             print(f"{'='*80}\n")
-
-            # 4. Log results to CSV
-            results_file = Path(config["general"]["output_base_dir"]) / "finetuning_results.csv"
-            result_row = {
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "model": nickname,
-                "model_name": model_config["model_name"],
-                "rouge_1_f1": rouge_scores['rouge-1']['f'],
-                "rouge_2_f1": rouge_scores['rouge-2']['f'],
-                "rouge_l_f1": rouge_scores['rouge-l']['f'],
-                "rouge_sum": rouge_sum
-            }
-
-            # Append to CSV
-            import csv
-            file_exists = results_file.exists()
-            with open(results_file, 'a', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=result_row.keys())
-                if not file_exists:
-                    writer.writeheader()
-                writer.writerow(result_row)
-            print(f"✅ 결과 저장: {results_file}")
 
             # W&B Run 종료
             wandb_logger.finish()
 
-            # 5. Cleanup - 체크포인트 완전 삭제
-            print(f"\n🗑️  체크포인트 삭제 중...")
-            checkpoint_dir = Path(config["general"]["output_base_dir"]) / nickname
-            if checkpoint_dir.exists():
-                size_before = sum(f.stat().st_size for f in checkpoint_dir.rglob('*') if f.is_file()) / (1024**3)
-                shutil.rmtree(checkpoint_dir)
-                print(f"✅ 체크포인트 삭제 완료: {nickname} ({size_before:.2f}GB 확보)")
+            # 5. Cleanup - 체크포인트 삭제 (Config 설정에 따라)
+            if config["disk_management"]["cleanup_old_checkpoints"]:
+                print(f"\n🗑️  체크포인트 삭제 중...")
+                checkpoint_dir = Path(config["general"]["output_base_dir"]) / nickname
+                if checkpoint_dir.exists():
+                    size_before = sum(f.stat().st_size for f in checkpoint_dir.rglob('*') if f.is_file()) / (1024**3)
+                    shutil.rmtree(checkpoint_dir)
+                    print(f"✅ 체크포인트 삭제 완료: {nickname} ({size_before:.2f}GB 확보)")
+            else:
+                print(f"\n💾 체크포인트 보존 모드: {nickname} 삭제 건너뛰기")
 
             # Cleanup model & memory
             del model
