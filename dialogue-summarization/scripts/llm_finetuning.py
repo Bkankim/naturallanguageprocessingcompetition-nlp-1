@@ -182,18 +182,55 @@ def load_data(data_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     return train_df, dev_df
 
 
+def format_dialogue_korean_dcs(dialogue: str, topic: str = None) -> str:
+    """
+    Korean_DCS_2024 형식으로 대화 변환
+
+    Input:  "#Person1#: 안녕\n#Person2#: 반가워"
+    Output: "[Conversation]\n화자1: 안녕\n화자2: 반가워\n\n[Question]\n위 {topic} 주제에 대한 대화를 요약해주세요."
+    """
+    # #PersonX# → 화자X 변환
+    lines = dialogue.split('\n')
+    formatted_lines = ["[Conversation]"]
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # #Person1#: ... → 화자1: ...
+        line = line.replace('#Person1#:', '화자1:')
+        line = line.replace('#Person2#:', '화자2:')
+        line = line.replace('#Person3#:', '화자3:')
+        line = line.replace('#Person4#:', '화자4:')
+        line = line.replace('#Person5#:', '화자5:')
+        line = line.replace('#Person6#:', '화자6:')
+        line = line.replace('#Person7#:', '화자7:')
+        formatted_lines.append(line)
+
+    # [Question] 추가
+    if topic and topic.strip():
+        question = f"[Question]\n위 {topic} 주제에 대한 대화를 요약해주세요."
+    else:
+        question = "[Question]\n위 대화를 요약해주세요."
+
+    return "\n".join(formatted_lines) + "\n\n" + question
+
+
 def apply_chat_template(
     dialogue: str,
     summary: str,
     template_type: str,
     system_prompt: str,
     tokenizer: Any,
+    topic: str = None,
     for_training: bool = True
 ) -> Dict[str, str]:
     """
-    Chat template 적용 (HuggingFace 공식 API 사용)
+    Chat template 적용 (Korean_DCS_2024 형식)
 
     Args:
+        dialogue: 원본 대화 ("#Person1#: ..." 형식)
+        topic: 주제 정보 (예: "일상, 관계")
         for_training: True면 add_generation_prompt=False (훈련용),
                      False면 add_generation_prompt=True (추론용)
 
@@ -204,11 +241,14 @@ def apply_chat_template(
         # Encoder-Decoder는 chat template 불필요
         return {"input": dialogue, "target": summary}
 
+    # Korean_DCS_2024 형식으로 변환
+    formatted_dialogue = format_dialogue_korean_dcs(dialogue, topic)
+
     if for_training:
         # 훈련: add_generation_prompt=False (정답 포함)
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"다음 대화를 요약하세요:\n---\n{dialogue}\n---"},
+            {"role": "user", "content": formatted_dialogue},
             {"role": "assistant", "content": summary}  # 정답 포함
         ]
         full_text = tokenizer.apply_chat_template(
@@ -222,7 +262,7 @@ def apply_chat_template(
         # 추론: add_generation_prompt=True (assistant 턴 시작만)
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"다음 대화를 요약하세요:\n---\n{dialogue}\n---"}
+            {"role": "user", "content": formatted_dialogue}
             # assistant 제외
         ]
         prompt = tokenizer.apply_chat_template(
@@ -250,10 +290,12 @@ def prepare_dataset(
     for _, row in df.iterrows():
         dialogue = row["dialogue"]
         summary = row["summary"]
+        topic = row.get("topic", "")  # Korean_DCS_2024: 주제 정보 추출
 
-        # Chat template 적용 (훈련용)
+        # Chat template 적용 (훈련용, Korean_DCS_2024 형식)
         templated = apply_chat_template(
             dialogue, summary, template_type, system_prompt, tokenizer,
+            topic=topic,  # Korean_DCS_2024: 주제 전달
             for_training=True
         )
 
@@ -530,6 +572,7 @@ def run_inference_on_dev(
 
     dialogues = dev_df['dialogue'].tolist()
     references = dev_df['summary'].tolist() if 'summary' in dev_df.columns else []
+    topics = dev_df['topic'].tolist() if 'topic' in dev_df.columns else [""] * len(dialogues)  # Korean_DCS_2024: 주제 정보
     predictions = []
 
     # Chat template 타입 가져오기
@@ -549,11 +592,12 @@ def run_inference_on_dev(
 
     for i in tqdm(range(0, len(dialogues), batch_size), desc="Inference"):
         batch_dialogues = dialogues[i:i+batch_size]
+        batch_topics = topics[i:i+batch_size]  # Korean_DCS_2024: 배치별 주제
 
         # Chat template 적용 (Causal LM만)
         if template_type:
             batch_prompts = []
-            for dialogue in batch_dialogues:
+            for dialogue, topic in zip(batch_dialogues, batch_topics):  # Korean_DCS_2024: topic 함께 iterate
                 # 추론용: add_generation_prompt=True
                 templated = apply_chat_template(
                     dialogue,
@@ -561,6 +605,7 @@ def run_inference_on_dev(
                     template_type,
                     system_prompt,
                     tokenizer,
+                    topic=topic,  # Korean_DCS_2024: 주제 전달
                     for_training=False  # 추론 모드
                 )
                 batch_prompts.append(templated["input"])
