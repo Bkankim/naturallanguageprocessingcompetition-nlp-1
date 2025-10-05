@@ -830,7 +830,7 @@ def train_model(
 
         trainer = SFTTrainer(
             model=model,
-            tokenizer=tokenizer,  # 명시적 전달 (필수)
+            processing_class=tokenizer,  # TRL 0.23.1: processing_class (0.9.4: tokenizer)
             args=args,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
