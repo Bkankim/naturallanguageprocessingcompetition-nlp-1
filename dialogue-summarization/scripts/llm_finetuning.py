@@ -819,8 +819,8 @@ def train_model(
             logging_first_step=training_config.get("logging_first_step", True),
             report_to="wandb" if wandb_logger.enabled else "none",
             run_name=run_name,
-            # SFT 특화 파라미터 (Korean_DCS_2024)
-            max_seq_length=config["tokenizer"].get("encoder_max_len", 1024),
+            # SFT 특화 파라미터 (TRL 0.23.1 호환)
+            max_length=config["tokenizer"].get("encoder_max_len", 1024),  # TRL 0.23.1: max_length (0.9.4: max_seq_length)
             packing=True,  # 효율성 향상 (2-3x speedup)
             seed=42
         )
