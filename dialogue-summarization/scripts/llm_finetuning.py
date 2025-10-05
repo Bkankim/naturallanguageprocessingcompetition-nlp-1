@@ -821,7 +821,7 @@ def train_model(
             run_name=run_name,
             # SFT 특화 파라미터 (TRL 0.23.1 호환)
             max_length=config["tokenizer"].get("encoder_max_len", 1024),  # TRL 0.23.1: max_length (0.9.4: max_seq_length)
-            packing=True,  # 효율성 향상 (2-3x speedup)
+            packing=False,  # Korean_DCS_2024 실제 동작 (custom collator 우선, labels 정확성 보장)
             seed=42
         )
 
