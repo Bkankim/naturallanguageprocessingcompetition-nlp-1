@@ -135,7 +135,110 @@ system_prompt: |
 
 ---
 
-## 🔧 Phase 2: Prompt 구조화 (1-2시간)
+## ⚡ Phase 1.5: 추가 Quick Wins (심층 분석 결과)
+
+**작성일**: 2025-10-05 (Korean_DCS_2024 심층 비교 완료)
+**소요 시간**: 30-60분
+**리스크**: 낮음
+**예상 효과**: 메모리 효율 개선, 재현성 확보
+
+### 1.6 gradient_checkpointing_kwargs 추가 (🔥 즉시 적용)
+
+**변경 전** (`configs/finetune_config.yaml`):
+```yaml
+training:
+  gradient_checkpointing: true  # use_reentrant 기본값 True (구식)
+```
+
+**변경 후**:
+```yaml
+training:
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false  # ✅ PyTorch 2.0+ 권장
+```
+
+**근거**:
+- **Korean_DCS_2024**: `gradient_checkpointing_kwargs={"use_reentrant": False}` 명시
+- PyTorch 2.0+에서 `use_reentrant=False`가 권장됨
+- 메모리 효율성 향상 + 안정성 개선
+- 기본값 True는 deprecated warning 발생 가능
+
+**영향도**: ⭐⭐⭐ High (메모리 최적화)
+
+**파일 수정**:
+```bash
+# configs/finetune_config.yaml Line 182 수정
+vim configs/finetune_config.yaml
+```
+
+---
+
+### 1.7 Package 버전 Korean_DCS_2024와 동기화 (선택적)
+
+**현재 버전**:
+```
+transformers==4.57.0
+peft==0.17.1
+trl==0.23.1
+```
+
+**Korean_DCS_2024 검증 버전**:
+```
+transformers==4.41.1
+peft==0.11.1
+trl==0.9.4
+```
+
+**차이 분석**:
+| 패키지 | 현재 | 베이스라인 | 버전 차이 | 호환성 리스크 |
+|--------|------|------------|-----------|---------------|
+| transformers | 4.57.0 | 4.41.1 | +16 버전 | ⚠️ Medium (API 변경 가능) |
+| peft | 0.17.1 | 0.11.1 | +6 버전 | ⚠️ Low (LoRA 동작 차이) |
+| trl | 0.23.1 | 0.9.4 | +14 버전 | ⚠️⚠️ High (SFTTrainer 대폭 변경) |
+
+**권장 사항**:
+- **Option A (보수적)**: 베이스라인 버전으로 다운그레이드
+  ```bash
+  pip install transformers==4.41.1 peft==0.11.1 trl==0.9.4
+  ```
+  - 장점: 베이스라인과 완전 동일한 환경, 재현성 극대화
+  - 단점: 최신 버그 패치 누락
+
+- **Option B (현상 유지)**: 현재 버전 유지, Phase 3 SFTTrainer 적용 시 주의
+  - 장점: 최신 버그 패치 적용
+  - 단점: 베이스라인과 동작 차이 가능
+
+**결정**: Phase 1.5는 현재 버전 유지, Phase 3 SFTTrainer 적용 시 호환성 검증
+
+---
+
+### 1.8 warmup_steps vs warmup_ratio 비교 (문서화만)
+
+**현재 설정**:
+```yaml
+training:
+  warmup_ratio: 0.1  # 전체 steps의 10%
+```
+
+**Korean_DCS_2024**:
+```python
+warmup_steps=args.warmup_steps  # 절대값 (명시적)
+```
+
+**차이점**:
+- 우리: warmup_ratio → 데이터셋 크기에 따라 변동
+- 베이스라인: warmup_steps → 고정값, 재현성 높음
+
+**계산 예시**:
+- 전체 steps = 130 (12,457 / batch=8 / grad_accum=8 / 3 epochs)
+- warmup_ratio=0.1 → warmup_steps=13
+
+**결론**: 현재 설정 유지 (유연성 우선)
+
+---
+
+## 🔧 Phase 2: Prompt 구조화 + Label Masking 개선 (2-3시간)
 
 **소요 시간**: 1-2시간
 **리스크**: 중간 (코드 수정 필요)
@@ -208,6 +311,131 @@ def format_dialogue_prompt(sample):
 **주의사항**:
 - 베이스라인은 `subject_keyword` 필드를 사용하지만, 우리 데이터에는 없을 수 있음
 - 없는 경우 기본값 "대화"로 대체
+
+---
+
+### 2.3 Label Masking 방식 개선 (Korean_DCS_2024 방식)
+
+**현재 방식** (복잡하고 실패 가능):
+```python
+# 1. 전체를 한번에 토크나이즈
+full_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+full_ids = tokenizer(full_text, ...)["input_ids"]
+
+# 2. Assistant 헤더를 문자열 검색으로 찾기 (❌ 실패 위험)
+assistant_header_ids = tokenizer.encode(assistant_header, add_special_tokens=False)
+for i in range(len(full_ids) - len(assistant_header_ids) + 1):
+    if full_ids[i:i+len(assistant_header_ids)] == assistant_header_ids:
+        prompt_length = i + len(assistant_header_ids)
+        break
+
+# 3. 찾지 못하면 fallback (Line 307-311)
+if prompt_length == 0:
+    labels = [-100] * len(full_ids)  # 전체 마스킹
+```
+
+**문제점**:
+- ❌ Assistant 헤더를 못 찾을 위험 (truncation, 토크나이저 버전 차이)
+- ❌ 모델별로 헤더가 다를 수 있음
+- ❌ 디버깅 어려움
+
+---
+
+**Korean_DCS_2024 방식** (명확하고 안전):
+```python
+# 1. Prompt만 따로 토크나이즈 (add_generation_prompt=True)
+message_prompt = [
+    {"role": "system", "content": system_prompt},
+    {"role": "user", "content": chat}
+]
+source = tokenizer.apply_chat_template(
+    message_prompt,
+    add_generation_prompt=True,  # assistant 헤더까지만
+    return_tensors="pt"
+)
+
+# 2. Target만 따로 토크나이즈
+target = example["output"]
+if target != "":
+    target += tokenizer.eos_token
+target_ids = tokenizer(
+    target,
+    return_attention_mask=False,
+    add_special_tokens=False,
+    return_tensors="pt"
+)["input_ids"]
+
+# 3. Concat + Label 마스킹 (정확함!)
+input_ids = torch.concat((source[0], target_ids[0]))
+labels = torch.concat((
+    torch.LongTensor([IGNORE_INDEX] * source[0].shape[0]),  # Prompt 전체 마스킹
+    target_ids[0]  # Response만 학습
+))
+```
+
+**장점**:
+- ✅ 명확하고 실패가 없음
+- ✅ add_generation_prompt=True로 정확한 경계 파악
+- ✅ 간단하고 직관적 (디버깅 쉬움)
+- ✅ 모델 독립적 (Llama/Qwen 모두 동작)
+
+---
+
+**구현 계획**:
+
+**파일**: `scripts/llm_finetuning.py`
+**함수**: `prepare_causal_lm_data()` Line 268-320
+
+**변경 전** (Lines 268-321):
+```python
+if template_type:  # Decoder-only (Llama, Qwen)
+    full_text = templated["input"]
+    full_ids = tokenizer(full_text, ...)["input_ids"]
+
+    # Assistant 헤더 검색...
+    for i in range(len(full_ids) - len(assistant_header_ids) + 1):
+        ...
+```
+
+**변경 후**:
+```python
+if template_type:  # Decoder-only (Llama, Qwen)
+    # 1. Prompt만 토크나이즈 (Korean_DCS_2024 방식)
+    message_prompt = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"다음 대화를 요약하세요:\n---\n{dialogue}\n---"}
+    ]
+    source_ids = tokenizer.apply_chat_template(
+        message_prompt,
+        add_generation_prompt=True,  # assistant 헤더까지
+        add_special_tokens=True,
+        return_tensors="pt"
+    )[0]  # [0]으로 1D 텐서 추출
+
+    # 2. Target만 토크나이즈
+    target_text = summary + tokenizer.eos_token
+    target_ids = tokenizer(
+        target_text,
+        add_special_tokens=False,
+        truncation=True,
+        max_length=max_target_length,
+        return_tensors="pt"
+    )["input_ids"][0]
+
+    # 3. Concat + Label 마스킹
+    input_ids = torch.concat((source_ids, target_ids)).tolist()
+    labels = ([-100] * len(source_ids)) + target_ids.tolist()
+
+    data_dicts.append({
+        "input_ids": input_ids,
+        "labels": labels
+    })
+```
+
+**예상 효과**:
+- Prompt truncation 문제 완전 해결
+- Label 계산 정확도 100% (헤더 검색 실패 0%)
+- 코드 가독성 및 유지보수성 대폭 향상
 
 ---
 
@@ -482,6 +710,6 @@ vim scripts/llm_finetuning.py
 
 ---
 
-**마지막 업데이트**: 2025-10-05
+**마지막 업데이트**: 2025-10-05 (심층 분석 완료)
 **작성자**: Claude Code
-**상태**: Phase 1 준비 완료
+**상태**: Phase 1 완료, Phase 1.5 준비 중

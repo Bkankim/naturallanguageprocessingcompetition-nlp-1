@@ -180,6 +180,8 @@ training:
   bf16: false                 # 기본값 (모델별로 override)
   fp16: true                  # 기본값 (모델별로 override)
   gradient_checkpointing: true  # 메모리 절약
+  gradient_checkpointing_kwargs:
+    use_reentrant: false      # PyTorch 2.0+ 최적화 (Korean_DCS_2024 베이스라인)
 
   # Seq2Seq 특화
   predict_with_generate: true
