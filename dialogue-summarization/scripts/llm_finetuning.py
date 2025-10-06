@@ -623,10 +623,12 @@ def run_inference_on_dev(
         )
 
         # Remove token_type_ids if present (BART doesn't use it)
-        # Fix dtype mismatch: 모델의 dtype에 맞춰 입력 변환 (BFloat16 모델 대응)
+        # Fix dtype mismatch: 모델의 dtype에 맞춰 입력 변환 (BFloat16/Float16 모델 대응)
         model_dtype = next(model.parameters()).dtype
-        inputs = {k: v.to(device=device, dtype=model_dtype if v.dtype == torch.float32 else v.dtype)
-                  for k, v in inputs.items() if k != 'token_type_ids'}
+        inputs = {
+            k: v.to(device=device, dtype=model_dtype) if v.dtype in [torch.float32, torch.float16, torch.bfloat16] else v.to(device=device)
+            for k, v in inputs.items() if k != 'token_type_ids'
+        }
 
         # Generate
         with torch.no_grad():
