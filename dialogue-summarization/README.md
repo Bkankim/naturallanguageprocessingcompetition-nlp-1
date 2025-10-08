@@ -36,6 +36,20 @@ baseline.ipynb의 검증된 코드를 모듈화하여 재사용성과 유지보�
 
 ## 🚀 빠른 시작
 
+### 0. 📓 데모 노트북 (추천!)
+
+**LLM Fine-tuning 완벽 가이드 노트북**:
+```bash
+jupyter notebook llm_finetuning_demo.ipynb
+```
+
+이 노트북에서 배울 수 있는 내용:
+- ✅ QLoRA 개념 및 구현 방법
+- ✅ Fine-tuned 모델 로딩 및 추론
+- ✅ Chat Template 이슈 및 해결
+- ✅ ROUGE 점수 계산
+- ✅ 모델 성능 비교
+
 ### 1. 학습 실행
 
 ```bash
@@ -113,6 +127,10 @@ dialogue-summarization/
 │   ├── train_config.yaml           # 학습 설정
 │   ├── finetune_config.yaml        # LLM 파인튜닝 설정 (QLoRA)
 │   └── screening_config.yaml       # LLM 스크리닝 설정
+├── notebooks/                      # Jupyter Notebooks
+│   ├── llm_finetuning_demo.ipynb   # 🎯 LLM 파인튜닝 데모 (추천!)
+│   ├── train_demo.ipynb            # 학습 데모
+│   └── inference_demo.ipynb        # 추론 데모
 ├── checkpoints/                    # 모델 체크포인트
 ├── logs/                           # 로그 파일
 └── submissions/                    # 제출 파일
@@ -145,6 +163,13 @@ training:
 |------|---------|---------|---------|-----------|
 | baseline.ipynb | ~16 | ~9 | ~14 | **~47** |
 | Modular Structure | 32.28 | 13.46 | 30.03 | **75.77** |
+| **koBART Fine-tuned** | **56.20** | **24.35** | **13.96** | **94.51** |
+
+**Fine-tuning 상세**:
+- 모델: `digit82/kobart-summarization` (3 epochs, full fine-tuning)
+- 토큰 처리: `skip_special_tokens=False` + 수동 정제 (Baseline 방식)
+- 평가: Mecab 형태소 기반 ROUGE
+- Baseline 대비 **+24.7%** 향상 (75.77 → 94.51)
 
 ### Test Set (경진대회 제출)
 | 실험 | ROUGE-1 | ROUGE-2 | ROUGE-L | Final Score |

@@ -187,12 +187,12 @@ pip install rouge pandas pyyaml tqdm
 - **W&B 추적**: [dialogue-summarization-finetuning](https://wandb.ai/bkan-ai/dialogue-summarization-finetuning)
 
 **모델 학습 순서** (Sequential Training):
-1. 🔄 **Llama-3.2-Korean-3B** - In Progress (Started 14:22)
-   - beomi/Llama-3.2-Korean-3B-Instruct
+1. 🔄 **Llama-3.2-Korean-3B** - In Progress (33% 완료)
+   - Bllossom/llama-3.2-Korean-Bllossom-3B
    - QLoRA 4bit, bf16 compute dtype
 
 2. ⏸️ **Qwen3-4B-Instruct** - Pending
-   - Qwen/Qwen2.5-3B-Instruct
+   - Qwen/Qwen3-4B-Instruct-2507
    - QLoRA 4bit, fp16 compute dtype
 
 3. ⏸️ **Qwen2.5-7B-Instruct** - Pending
@@ -200,7 +200,7 @@ pip install rouge pandas pyyaml tqdm
    - QLoRA 4bit, fp16 compute dtype
 
 4. ⏸️ **Llama-3-Korean-8B** - Pending
-   - beomi/Llama-3-Open-Ko-8B-Instruct-preview
+   - MLP-KTLim/llama-3-Korean-Bllossom-8B
    - QLoRA 4bit, bf16 compute dtype
 
 **학습 설정**:
